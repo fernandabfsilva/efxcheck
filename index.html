@@ -698,7 +698,7 @@ const LOGO_B64 =
    URL do Web App abaixo, ANTES de subir este arquivo para o GitHub
    Pages.
    ===================================================================== */
-const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbwWTI9LCsW4mfp6fA7i9VL-l7D7oVqqB6hfbimhS6agjRWRMD5XlnJzTaGVVRPVbOm4iQ/exec';
+const BACKEND_URL = 'COLE_AQUI_A_URL_DO_SEU_BACKEND_APPS_SCRIPT';
 
 async function loadData(){
   try{
@@ -1506,21 +1506,21 @@ function renderMerchantsTab(c){
   const consulta = isConsultaAtivo();
   const rows = (c.merchants||[]).map(m => `
     <tr>
-      <td style="min-width:160px;">
+      <td style="word-break:break-word;">
         <div class="cell-main">${escapeHtml(m.razaoSocial)}</div>
         <div class="cell-sub">${escapeHtml(m.site||'—')}</div>
       </td>
-      <td style="white-space:nowrap;">${escapeHtml(m.pais||'—')}</td>
-      <td style="max-width:200px;">${escapeHtml(m.area||'—')}</td>
+      <td style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(m.pais||'—')}</td>
+      <td style="word-break:break-word;">${escapeHtml(m.area||'—')}</td>
       <td style="white-space:nowrap;">${fmtMoney(m.volume)}</td>
-      <td style="white-space:nowrap;">
+      <td>
         ${consulta ? statusBadge(m.status) : `
-        <select onchange="setMerchantStatus('${c.id}','${m.id}', this.value)" style="border:1px solid var(--border-light); border-radius:6px; padding:6px 8px; font-family:'Inter'; font-size:13px; font-weight:500;">
+        <select onchange="setMerchantStatus('${c.id}','${m.id}', this.value)" style="width:100%; border:1px solid var(--border-light); border-radius:6px; padding:6px 8px; font-family:'Inter'; font-size:13px; font-weight:500;">
           ${['Aprovado','Reprovado','Em Validação'].map(s=>`<option value="${s}" ${m.status===s?'selected':''}>${s}</option>`).join('')}
         </select>`}
       </td>
-      <td style="white-space:nowrap;">
-        <div style="display:flex; align-items:center; gap:10px;">
+      <td>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           ${validacaoMerchantBadge(c.id, m)}
           ${consulta ? '' : `<button class="btn btn-link" id="btn-validar-merchant-${m.id}" style="padding:0; white-space:nowrap;" onclick="validarMerchant('${c.id}','${m.id}')">${m.validacaoAtividade ? 'Revalidar' : 'Validar'}</button>`}
         </div>
@@ -1529,8 +1529,17 @@ function renderMerchantsTab(c){
     </tr>`).join('');
 
   const table = (c.merchants||[]).length ? `
-    <div class="card">
-      <table>
+    <div class="card" style="overflow-x:auto;">
+      <table style="table-layout:fixed; min-width:900px;">
+        <colgroup>
+          <col style="width:18%;">
+          <col style="width:10%;">
+          <col style="width:16%;">
+          <col style="width:10%;">
+          <col style="width:12%;">
+          <col style="width:24%;">
+          <col style="width:6%;">
+        </colgroup>
         <thead><tr><th>Merchant</th><th>País</th><th>Área de atuação</th><th>Volume</th><th>Aprovação</th><th>Validação de atividade</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -1678,9 +1687,19 @@ function validarMerchant(clienteId, merchantId){
           <div class="muted" style="margin-bottom:20px;">Área de atuação declarada no cadastro: <strong>${escapeHtml(m.area || '—')}</strong></div>
 
           <div class="muted" style="margin-bottom:10px;">Pesquise informações públicas sobre esse merchant antes de registrar o resultado:</div>
-          <div style="display:flex; gap:10px; margin-bottom:24px; flex-wrap:wrap;">
+          <div style="display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap;">
             <a href="${linkBusca}" target="_blank" class="btn btn-secondary btn-sm">🔎 Pesquisar no Google</a>
             ${linkSite ? `<a href="${linkSite}" target="_blank" class="btn btn-secondary btn-sm">🌐 Abrir site/rede social</a>` : ''}
+          </div>
+
+          <div class="card card-pad" id="info-site-box" style="margin-bottom:20px; background:var(--bg-secondary,#f9faff);">
+            <div class="muted" style="font-size:12px; margin-bottom:4px;">📄 Informações do site (busca automática e gratuita, sem IA)</div>
+            <div id="info-site-conteudo" class="muted" style="font-size:13px;">Buscando…</div>
+          </div>
+
+          <div style="margin-bottom:24px;">
+            <button class="btn btn-secondary btn-sm" id="btn-validar-ia-${merchantId}" onclick="validarMerchantComIA('${clienteId}','${merchantId}')">🤖 Validar automaticamente com IA (opcional, requer chave própria)</button>
+            <div class="muted" style="font-size:11px; margin-top:6px;">Usa IA com busca na web para preencher os campos abaixo. Sempre revise antes de salvar.</div>
           </div>
 
           <div class="field">
@@ -1702,6 +1721,91 @@ function validarMerchant(clienteId, merchantId){
         </div>
       </div>
     </div>`;
+
+  buscarInfoSiteMerchant(m.site);
+}
+
+async function buscarInfoSiteMerchant(site){
+  const box = document.getElementById('info-site-conteudo');
+  if(!box) return;
+
+  if(!site || site.trim().startsWith('@')){
+    box.textContent = site && site.trim().startsWith('@')
+      ? 'Este merchant usa uma rede social (não dá para buscar título/descrição de página automaticamente) — use o link acima para abrir manualmente.'
+      : 'Nenhum site cadastrado para este merchant.';
+    return;
+  }
+
+  try{
+    if(!BACKEND_URL || BACKEND_URL.includes('COLE_AQUI')){
+      throw new Error('BACKEND_URL não configurada.');
+    }
+    const resp = await fetch(BACKEND_URL + '?action=buscarSite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ site })
+    });
+    const data = await resp.json();
+    if(!data.ok){
+      box.textContent = 'Não foi possível buscar automaticamente: ' + (data.erro || 'erro desconhecido');
+      return;
+    }
+    if(!data.titulo && !data.descricao){
+      box.textContent = 'O site respondeu, mas não foi possível encontrar título ou descrição na página.';
+      return;
+    }
+    box.innerHTML = `
+      ${data.titulo ? `<div><strong>Título da página:</strong> ${escapeHtml(data.titulo)}</div>` : ''}
+      ${data.descricao ? `<div style="margin-top:4px;"><strong>Descrição:</strong> ${escapeHtml(data.descricao)}</div>` : ''}
+    `;
+  }catch(err){
+    box.textContent = 'Não foi possível buscar automaticamente: ' + err.message;
+  }
+}
+
+async function validarMerchantComIA(clienteId, merchantId){
+  if(bloquearConsulta()) return;
+  const c = getClient(clienteId);
+  const m = c.merchants.find(x => x.id === merchantId);
+  if(!m) return;
+
+  const btn = document.getElementById(`btn-validar-ia-${merchantId}`);
+  if(btn){ btn.disabled = true; btn.textContent = 'Pesquisando com IA…'; }
+
+  try{
+    if(!BACKEND_URL || BACKEND_URL.includes('COLE_AQUI')){
+      throw new Error('BACKEND_URL não configurada.');
+    }
+    const resp = await fetch(BACKEND_URL + '?action=validarMerchant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        razaoSocial: m.razaoSocial,
+        pais: m.pais || '',
+        site: m.site || '',
+        area: m.area || ''
+      })
+    });
+    const data = await resp.json();
+    if(!data.ok) throw new Error(data.erro || 'Erro desconhecido no backend.');
+
+    const texto = data.texto || '';
+    const veredito = (texto.match(/VEREDITO:\s*(Compatível|Incompatível|Inconclusivo)/i) || [])[1] || 'Inconclusivo';
+    const justificativaMatch = texto.match(/JUSTIFICATIVA:\s*([\s\S]*)/i);
+    const justificativa = justificativaMatch ? justificativaMatch[1].trim() : texto.trim();
+
+    const statusEl = document.getElementById('validacao-merchant-status');
+    const justificativaEl = document.getElementById('validacao-merchant-justificativa');
+    if(statusEl) statusEl.value = veredito;
+    if(justificativaEl) justificativaEl.value = justificativa;
+
+    showToast('Sugestão da IA preenchida. Revise antes de salvar.');
+  }catch(err){
+    console.error('Erro ao validar com IA:', err);
+    showToast('Não foi possível validar com IA agora: ' + err.message);
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '🤖 Validar automaticamente com IA'; }
+  }
 }
 
 function salvarValidacaoMerchant(clienteId, merchantId){
