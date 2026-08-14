@@ -2258,8 +2258,16 @@ function readFileAsArrayBuffer(file){
 
 // Lê um workbook ACAM e retorna uma lista de transações { merchant, valor, data, pais, clienteBR }.
 // Retorna null se não conseguir localizar as colunas de Merchant/Valor nesse arquivo específico.
+const LIMITE_LINHAS_SEGURANCA_ACAM = 100000;
+
 function parseAcamWorkbook(arrayBuffer){
-  const wb = XLSX.read(new Uint8Array(arrayBuffer), {type:'array', cellDates:true});
+  // Limite de segurança: algumas planilhas têm um "intervalo usado"
+  // muito maior do que os dados reais (por exemplo, formatação aplicada
+  // sem querer a milhares de linhas/colunas vazias), o que faz o XLSX.js
+  // tentar processar um espaço vazio gigantesco e travar a aba por muito
+  // tempo — mesmo em arquivos com poucos megabytes. sheetRows limita
+  // quantas linhas a biblioteca chega a processar, prevenindo isso.
+  const wb = XLSX.read(new Uint8Array(arrayBuffer), {type:'array', cellDates:true, sheetRows: LIMITE_LINHAS_SEGURANCA_ACAM});
   const sheet = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
   if(!rows.length) return [];
@@ -2462,6 +2470,9 @@ async function importAcamExcel(event, clienteId){
     if(!transacoes.length){
       showToast('Nenhuma transação encontrada no arquivo enviado.');
       return;
+    }
+    if(transacoes.length >= LIMITE_LINHAS_SEGURANCA_ACAM - 1){
+      showToast(`Atenção: o arquivo tem muitas linhas e pode ter sido cortado em ${LIMITE_LINHAS_SEGURANCA_ACAM.toLocaleString('pt-BR')} linhas por segurança. Se esperava mais dados, avise quem configurou a ferramenta.`);
     }
 
     const c = getClient(clienteId);
