@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Diagnóstico ACAM — eFX Check</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  body{ font-family: -apple-system, Arial, sans-serif; background:#fafbff; color:#292929; margin:0; padding:32px; max-width:720px; }
+  h1{ font-size:20px; margin-bottom:4px; }
+  .muted{ color:#666; font-size:13px; margin-bottom:24px; }
+  .card{ border:1px solid #e6e6e6; border-radius:10px; padding:20px; margin-bottom:16px; background:#fff; }
+  .dropzone{ border:2px dashed #c7d0ff; border-radius:10px; padding:24px; text-align:center; cursor:pointer; background:#f5f7ff; }
+  .item{ display:flex; align-items:flex-start; gap:10px; padding:12px 0; border-bottom:1px solid #f0f0f0; }
+  .item:last-child{ border-bottom:none; }
+  .icone{ font-size:16px; }
+  .label{ font-weight:600; font-size:13px; }
+  .valor{ font-size:13px; color:#333; margin-top:2px; }
+  .ok{ color:#1a8f4c; }
+  .erro{ color:#c0392b; }
+  .aviso{ color:#b8860b; }
+  #resultados{ display:none; }
+  button{ background:#1f41ff; color:#fff; border:none; border-radius:8px; padding:10px 18px; font-size:14px; font-weight:600; cursor:pointer; }
+  button:disabled{ background:#a3a3a3; cursor:not-allowed; }
+</style>
+</head>
+<body>
+  <h1>Diagnóstico de processamento ACAM</h1>
+  <div class="muted">Essa página testa, com o SEU arquivo real, quanto tempo o processamento leva e se a Web Worker funciona no seu navegador. Nada aqui é salvo ou enviado para lugar nenhum — tudo roda só na sua tela.</div>
+
+  <div class="card">
+    <label class="dropzone" style="display:block;">
+      <div style="font-weight:600; margin-bottom:4px;">Clique para selecionar o arquivo ACAM real (.xlsx)</div>
+      <div class="muted" style="margin:0;">O arquivo não sai do seu computador — este teste roda 100% no navegador.</div>
+      <input type="file" id="input-arquivo" accept=".xlsx,.xls" style="display:none">
+    </label>
+  </div>
+
+  <div id="status" class="muted"></div>
+
+  <div id="resultados" class="card">
+    <div id="lista-resultados"></div>
+  </div>
+
+<script>
+  const input = document.getElementById('input-arquivo');
+  const status = document.getElementById('status');
+  const resultadosBox = document.getElementById('resultados');
+  const lista = document.getElementById('lista-resultados');
+
+  function addItem(icone, label, valor, classe){
+    const div = document.createElement('div');
+    div.className = 'item';
+    div.innerHTML = `<div class="icone">${icone}</div><div><div class="label">${label}</div><div class="valor ${classe||''}">${valor}</div></div>`;
+    lista.appendChild(div);
+  }
+
+  function readFileAsArrayBuffer(file){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = () => reject(new Error('Falha ao ler o arquivo'));
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  // Mesma função de parsing usada no eFX Check de verdade, simplificada
+  // aqui só para contar linhas e medir o tempo — não precisa achar
+  // colunas específicas para esse diagnóstico.
+  function parseWorkbookSimples(arrayBuffer){
+    const wb = XLSX.read(new Uint8Array(arrayBuffer), {type:'array', cellDates:true});
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
+    return rows.length;
+  }
+
+  function criarWorkerTeste(){
+    const src = `
+      importScripts('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+      const parseWorkbookSimples = ${parseWorkbookSimples.toString()};
+      onmessage = function(e){
+        try{
+          const inicio = Date.now();
+          const numLinhas = parseWorkbookSimples(e.data.buffer);
+          const duracao = Date.now() - inicio;
+          postMessage({ ok: true, numLinhas, duracao });
+        }catch(err){
+          postMessage({ ok: false, erro: (err && err.message) || String(err) });
+        }
+      };
+    `;
+    const blob = new Blob([src], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    const worker = new Worker(url);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    return worker;
+  }
+
+  function testarWorker(buffer){
+    return new Promise((resolve) => {
+      let worker;
+      try{
+        worker = criarWorkerTeste();
+      }catch(err){
+        resolve({ ok:false, erro: 'Não foi possível criar a Worker: ' + err.message });
+        return;
+      }
+      let respondeu = false;
+      const timeoutId = setTimeout(() => {
+        if(respondeu) return;
+        respondeu = true;
+        try{ worker.terminate(); }catch(_e){}
+        resolve({ ok:false, erro: 'A Worker não respondeu em 60 segundos (timeout).' });
+      }, 60000);
+      worker.onmessage = (e) => {
+        if(respondeu) return;
+        respondeu = true;
+        clearTimeout(timeoutId);
+        try{ worker.terminate(); }catch(_e){}
+        resolve(e.data);
+      };
+      worker.onerror = (err) => {
+        if(respondeu) return;
+        respondeu = true;
+        clearTimeout(timeoutId);
+        resolve({ ok:false, erro: 'Erro na Worker: ' + (err.message || 'desconhecido') });
+      };
+      // Copia o buffer para nao afetar o teste da thread principal depois
+      const copia = buffer.slice(0);
+      worker.postMessage({ buffer: copia });
+    });
+  }
+
+  input.addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if(!file) return;
+
+    lista.innerHTML = '';
+    resultadosBox.style.display = 'block';
+    status.textContent = 'Lendo o arquivo…';
+
+    addItem('📄', 'Arquivo', `${file.name} — ${(file.size/1024/1024).toFixed(2)} MB`);
+
+    let buffer;
+    try{
+      const inicioLeitura = Date.now();
+      buffer = await readFileAsArrayBuffer(file);
+      addItem('✅', 'Leitura do arquivo (FileReader)', `${Date.now()-inicioLeitura} ms`, 'ok');
+    }catch(err){
+      addItem('❌', 'Leitura do arquivo', err.message, 'erro');
+      status.textContent = '';
+      return;
+    }
+
+    // Teste 1: Web Worker existe neste navegador?
+    if(typeof Worker === 'undefined'){
+      addItem('❌', 'Suporte a Web Worker', 'Worker não existe neste navegador.', 'erro');
+    } else {
+      addItem('✅', 'Suporte a Web Worker', 'Disponível neste navegador.', 'ok');
+
+      status.textContent = 'Testando processamento na Web Worker… (pode levar até 60s)';
+      const resultadoWorker = await testarWorker(buffer.slice(0));
+      if(resultadoWorker.ok){
+        addItem('✅', 'Processamento na Web Worker', `${resultadoWorker.numLinhas} linhas em ${resultadoWorker.duracao} ms`, 'ok');
+      } else {
+        addItem('❌', 'Processamento na Web Worker', resultadoWorker.erro, 'erro');
+      }
+    }
+
+    // Teste 2: processamento direto na thread principal (com aviso antes,
+    // já que ESSA parte pode travar a aba de verdade, propositalmente,
+    // para medirmos o tempo real).
+    status.textContent = 'Testando processamento direto na thread principal… a aba pode ficar sem responder por alguns segundos, isso é esperado neste teste.';
+    await new Promise(r => setTimeout(r, 200)); // deixa a mensagem acima aparecer antes de travar
+
+    try{
+      const inicio = Date.now();
+      const numLinhas = parseWorkbookSimples(buffer);
+      const duracao = Date.now() - inicio;
+      addItem(duracao > 5000 ? '⚠️' : '✅', 'Processamento direto (thread principal)', `${numLinhas} linhas em ${duracao} ms`, duracao > 5000 ? 'aviso' : 'ok');
+    }catch(err){
+      addItem('❌', 'Processamento direto (thread principal)', err.message, 'erro');
+    }
+
+    status.textContent = 'Diagnóstico concluído. Tire um print desta tela e envie.';
+  });
+</script>
+</body>
+</html>
