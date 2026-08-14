@@ -2259,16 +2259,40 @@ function readFileAsArrayBuffer(file){
 // Lê um workbook ACAM e retorna uma lista de transações { merchant, valor, data, pais, clienteBR }.
 // Retorna null se não conseguir localizar as colunas de Merchant/Valor nesse arquivo específico.
 const LIMITE_LINHAS_SEGURANCA_ACAM = 100000;
+const LIMITE_COLUNAS_SEGURANCA_ACAM = 100; // até a coluna "CV" — bem mais do que qualquer planilha ACAM real precisa
+
+// Corta o "intervalo usado" (!ref) da planilha para um tamanho razoável
+// ANTES de converter para linhas. Isso é necessário porque algumas
+// planilhas declaram uso até a última coluna que existe no Excel (XFD,
+// a coluna 16.384) mesmo tendo dados reais só nas primeiras colunas —
+// normalmente por causa de alguma formatação (cor de fundo, borda etc.)
+// aplicada sem querer à coluna/linha inteira. Isso faz o número de
+// "células possíveis" explodir para centenas de milhões, e é isso que
+// trava o navegador — não a quantidade de linhas em si.
+function limitarIntervaloPlanilha(sheet, maxColunas, maxLinhas){
+  if(!sheet['!ref']) return sheet;
+  try{
+    const range = XLSX.utils.decode_range(sheet['!ref']);
+    range.e.c = Math.min(range.e.c, maxColunas - 1);
+    range.e.r = Math.min(range.e.r, maxLinhas - 1);
+    sheet['!ref'] = XLSX.utils.encode_range(range);
+  }catch(e){
+    console.warn('Não foi possível limitar o intervalo da planilha, seguindo sem cortar:', e);
+  }
+  return sheet;
+}
 
 function parseAcamWorkbook(arrayBuffer){
   // Limite de segurança: algumas planilhas têm um "intervalo usado"
   // muito maior do que os dados reais (por exemplo, formatação aplicada
-  // sem querer a milhares de linhas/colunas vazias), o que faz o XLSX.js
-  // tentar processar um espaço vazio gigantesco e travar a aba por muito
-  // tempo — mesmo em arquivos com poucos megabytes. sheetRows limita
-  // quantas linhas a biblioteca chega a processar, prevenindo isso.
+  // sem querer a milhares de linhas/colunas vazias — inclusive até a
+  // última coluna do Excel, XFD), o que faz o XLSX.js tentar processar
+  // um espaço vazio gigantesco e travar a aba por muito tempo — mesmo em
+  // arquivos com poucos megabytes. sheetRows limita linhas na leitura, e
+  // limitarIntervaloPlanilha corta o excesso de colunas antes de montar
+  // as linhas em JSON.
   const wb = XLSX.read(new Uint8Array(arrayBuffer), {type:'array', cellDates:true, sheetRows: LIMITE_LINHAS_SEGURANCA_ACAM});
-  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const sheet = limitarIntervaloPlanilha(wb.Sheets[wb.SheetNames[0]], LIMITE_COLUNAS_SEGURANCA_ACAM, LIMITE_LINHAS_SEGURANCA_ACAM);
   const rows = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
   if(!rows.length) return [];
   const header = rows[0];
