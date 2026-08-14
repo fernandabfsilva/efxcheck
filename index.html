@@ -2320,6 +2320,104 @@ function parseAcamWorkbook(arrayBuffer){
 
 let acamProcessando = false;
 
+/* =====================================================================
+   PROCESSAMENTO EM WEB WORKER (thread separada do navegador)
+   =====================================================================
+   Planilhas ACAM grandes fazem o XLSX.read()/sheet_to_json() demorar
+   bastante, e como isso é síncrono, trava a aba inteira enquanto
+   processa — mesmo com um único arquivo. Para isso não acontecer, o
+   trabalho pesado roda numa Web Worker.
+
+   A biblioteca XLSX é baixada uma vez pela própria thread principal
+   (via fetch, ao mesmo link que a página já carrega com sucesso) e o
+   código-fonte dela é repassado para dentro da worker — a worker não
+   precisa buscar nada por conta própria.
+   ===================================================================== */
+let xlsxLibSourcePromise = null;
+function obterCodigoFonteXLSX(){
+  if(!xlsxLibSourcePromise){
+    xlsxLibSourcePromise = fetch('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js')
+      .then(r => { if(!r.ok) throw new Error('HTTP ' + r.status); return r.text(); });
+  }
+  return xlsxLibSourcePromise;
+}
+
+function criarAcamWorker(xlsxSrc){
+  const src = xlsxSrc + `
+;
+const normalize = ${normalize.toString()};
+const findCol = ${findCol.toString()};
+const parseAcamWorkbook = ${parseAcamWorkbook.toString()};
+onmessage = function(e){
+  try{
+    const resultado = parseAcamWorkbook(e.data.buffer);
+    postMessage({ ok: true, resultado });
+  }catch(err){
+    postMessage({ ok: false, erro: (err && err.message) || String(err) });
+  }
+};
+`;
+  const blob = new Blob([src], { type: 'application/javascript' });
+  const url = URL.createObjectURL(blob);
+  const worker = new Worker(url);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  return worker;
+}
+
+// Processa um ArrayBuffer numa Web Worker. Se qualquer coisa falhar (sem
+// suporte a Worker, sem rede para buscar a lib, erro na worker), cai de
+// volta para o processamento direto na thread principal — nunca deixa o
+// arquivo sem ser processado por completo.
+async function parseAcamWorkbookAsync(buffer){
+  let xlsxSrc;
+  try{
+    xlsxSrc = await obterCodigoFonteXLSX();
+  }catch(err){
+    console.warn('Não foi possível buscar a biblioteca XLSX para a worker, processando na thread principal:', err);
+    return parseAcamWorkbook(buffer);
+  }
+
+  return new Promise((resolve) => {
+    let worker;
+    try{
+      worker = criarAcamWorker(xlsxSrc);
+    }catch(err){
+      console.warn('Web Worker indisponível, processando na thread principal:', err);
+      try{ resolve(parseAcamWorkbook(buffer)); }
+      catch(err2){ console.error(err2); resolve(null); }
+      return;
+    }
+    let respondeu = false;
+    const finalizarComFallback = () => {
+      if(respondeu) return;
+      respondeu = true;
+      try{ worker.terminate(); }catch(_e){}
+      try{ resolve(parseAcamWorkbook(buffer)); }
+      catch(err2){ console.error(err2); resolve(null); }
+    };
+    const timeoutId = setTimeout(finalizarComFallback, 90000);
+    worker.onmessage = (e) => {
+      if(respondeu) return;
+      respondeu = true;
+      clearTimeout(timeoutId);
+      try{ worker.terminate(); }catch(_e){}
+      if(e.data && e.data.ok){ resolve(e.data.resultado); }
+      else{ console.error('Erro na worker ACAM:', e.data && e.data.erro); resolve(null); }
+    };
+    worker.onerror = (err) => {
+      console.warn('Falha na Web Worker, caindo para thread principal:', err && err.message);
+      clearTimeout(timeoutId);
+      finalizarComFallback();
+    };
+    try{
+      worker.postMessage({ buffer });
+    }catch(err){
+      clearTimeout(timeoutId);
+      finalizarComFallback();
+    }
+  });
+}
+
 /* Mostra/atualiza um aviso PERSISTENTE (não some em 3 segundos, ao contrário do
    toast) enquanto o arquivo ACAM está sendo processado. */
 function atualizarStatusUploadAcam(mensagem){
@@ -2363,7 +2461,7 @@ async function importAcamExcel(event, clienteId){
 
   try{
     const buffer = await readFileAsArrayBuffer(file);
-    const transacoes = parseAcamWorkbook(buffer);
+    const transacoes = await parseAcamWorkbookAsync(buffer);
 
     if(finalizado) return;
 
