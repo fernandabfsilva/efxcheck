@@ -2323,40 +2323,29 @@ let acamProcessando = false;
 /* =====================================================================
    PROCESSAMENTO EM WEB WORKER (thread separada do navegador)
    =====================================================================
-   Planilhas ACAM grandes fazem o XLSX.read()/sheet_to_json() demorar
-   bastante, e como isso é síncrono, trava a aba inteira enquanto
-   processa — mesmo com um único arquivo. Para isso não acontecer, o
-   trabalho pesado roda numa Web Worker.
-
-   A biblioteca XLSX é baixada uma vez pela própria thread principal
-   (via fetch, ao mesmo link que a página já carrega com sucesso) e o
-   código-fonte dela é repassado para dentro da worker — a worker não
-   precisa buscar nada por conta própria.
+   Diferente de uma tentativa anterior: aqui a worker busca a biblioteca
+   XLSX por conta própria, usando importScripts() — isso acontece DENTRO
+   da worker, então mesmo que essa busca demore ou falhe, a thread
+   principal (a tela que você está olhando) nunca fica travada
+   esperando por isso. O contador de tempo que decide quando desistir e
+   usar o processamento direto roda na thread principal, então ele
+   sempre funciona, não importa o que aconteça dentro da worker.
    ===================================================================== */
-let xlsxLibSourcePromise = null;
-function obterCodigoFonteXLSX(){
-  if(!xlsxLibSourcePromise){
-    xlsxLibSourcePromise = fetch('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js')
-      .then(r => { if(!r.ok) throw new Error('HTTP ' + r.status); return r.text(); });
-  }
-  return xlsxLibSourcePromise;
-}
-
-function criarAcamWorker(xlsxSrc){
-  const src = xlsxSrc + `
-;
-const normalize = ${normalize.toString()};
-const findCol = ${findCol.toString()};
-const parseAcamWorkbook = ${parseAcamWorkbook.toString()};
-onmessage = function(e){
-  try{
-    const resultado = parseAcamWorkbook(e.data.buffer);
-    postMessage({ ok: true, resultado });
-  }catch(err){
-    postMessage({ ok: false, erro: (err && err.message) || String(err) });
-  }
-};
-`;
+function criarAcamWorker(){
+  const src = `
+    importScripts('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+    const normalize = ${normalize.toString()};
+    const findCol = ${findCol.toString()};
+    const parseAcamWorkbook = ${parseAcamWorkbook.toString()};
+    onmessage = function(e){
+      try{
+        const resultado = parseAcamWorkbook(e.data.buffer);
+        postMessage({ ok: true, resultado });
+      }catch(err){
+        postMessage({ ok: false, erro: (err && err.message) || String(err) });
+      }
+    };
+  `;
   const blob = new Blob([src], { type: 'application/javascript' });
   const url = URL.createObjectURL(blob);
   const worker = new Worker(url);
@@ -2365,22 +2354,14 @@ onmessage = function(e){
 }
 
 // Processa um ArrayBuffer numa Web Worker. Se qualquer coisa falhar (sem
-// suporte a Worker, sem rede para buscar a lib, erro na worker), cai de
-// volta para o processamento direto na thread principal — nunca deixa o
-// arquivo sem ser processado por completo.
-async function parseAcamWorkbookAsync(buffer){
-  let xlsxSrc;
-  try{
-    xlsxSrc = await obterCodigoFonteXLSX();
-  }catch(err){
-    console.warn('Não foi possível buscar a biblioteca XLSX para a worker, processando na thread principal:', err);
-    return parseAcamWorkbook(buffer);
-  }
-
+// suporte a Worker, erro dentro da worker, ou ela simplesmente não
+// responder a tempo), cai de volta para o processamento direto na
+// thread principal — nunca deixa o arquivo sem ser processado.
+function parseAcamWorkbookAsync(buffer){
   return new Promise((resolve) => {
     let worker;
     try{
-      worker = criarAcamWorker(xlsxSrc);
+      worker = criarAcamWorker();
     }catch(err){
       console.warn('Web Worker indisponível, processando na thread principal:', err);
       try{ resolve(parseAcamWorkbook(buffer)); }
@@ -2395,14 +2376,20 @@ async function parseAcamWorkbookAsync(buffer){
       try{ resolve(parseAcamWorkbook(buffer)); }
       catch(err2){ console.error(err2); resolve(null); }
     };
-    const timeoutId = setTimeout(finalizarComFallback, 90000);
+    // Esse contador roda na thread principal (não depende de nada da
+    // worker), então dispara de verdade mesmo se a worker travar.
+    const timeoutId = setTimeout(finalizarComFallback, 45000);
     worker.onmessage = (e) => {
       if(respondeu) return;
       respondeu = true;
       clearTimeout(timeoutId);
       try{ worker.terminate(); }catch(_e){}
       if(e.data && e.data.ok){ resolve(e.data.resultado); }
-      else{ console.error('Erro na worker ACAM:', e.data && e.data.erro); resolve(null); }
+      else{
+        console.error('Erro na worker ACAM, tentando na thread principal:', e.data && e.data.erro);
+        try{ resolve(parseAcamWorkbook(buffer)); }
+        catch(err2){ console.error(err2); resolve(null); }
+      }
     };
     worker.onerror = (err) => {
       console.warn('Falha na Web Worker, caindo para thread principal:', err && err.message);
@@ -2439,7 +2426,10 @@ async function importAcamExcel(event, clienteId){
   atualizarStatusUploadAcam('Processando arquivo… não feche esta aba.');
 
   // Trava de segurança: garante que a ferramenta nunca fique presa para
-  // sempre, mesmo se algo inesperado travar no meio do caminho.
+  // sempre, mesmo se algo inesperado travar no meio do caminho. Fica
+  // maior que o timer interno da worker (45s) para dar folga suficiente
+  // para o processamento de fallback (direto na thread principal, que
+  // pode ser mais lento) terminar antes desse aqui disparar.
   let finalizado = false;
   const safetyTimer = setTimeout(() => {
     if(finalizado) return;
@@ -2448,7 +2438,7 @@ async function importAcamExcel(event, clienteId){
     atualizarStatusUploadAcam('');
     showToast('O processamento demorou mais do que o esperado e foi cancelado. Tente novamente.');
     event.target.value = '';
-  }, 60000);
+  }, 150000);
 
   const finalizarNormalmente = () => {
     if(finalizado) return;
