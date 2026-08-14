@@ -1989,12 +1989,12 @@ function renderAcamTab(c){
 
   const uploadCard = consulta ? '' : `
     <div class="card card-pad">
-      <div class="section-title" style="margin-bottom:12px;">Cruzar arquivo(s) ACAM</div>
-      <div class="muted" style="margin-bottom:16px;">Envie uma ou mais planilhas ACAM (Excel) para cruzar com os merchants cadastrados deste cliente. Se enviar mais de um arquivo, eles são compilados numa única análise. Colunas esperadas: Nome da contraparte da transação no exterior (Merchant/Razão Social), Data da transação, Valor da transação na moeda estrangeira (somado por merchant), País da contraparte da transação no exterior, Nome do cliente no Brasil.</div>
+      <div class="section-title" style="margin-bottom:12px;">Cruzar arquivo ACAM</div>
+      <div class="muted" style="margin-bottom:16px;">Envie a planilha ACAM (Excel) para cruzar com os merchants cadastrados deste cliente. Colunas esperadas: Nome da contraparte da transação no exterior (Merchant/Razão Social), Data da transação, Valor da transação na moeda estrangeira (somado por merchant), País da contraparte da transação no exterior, Nome do cliente no Brasil.</div>
       <label class="dropzone" style="display:block; cursor:pointer;">
-        <div style="font-weight:600; margin-bottom:4px;">Clique para selecionar o(s) arquivo(s) ACAM (.xlsx)</div>
-        <div class="muted">Pode selecionar vários arquivos de uma vez (Ctrl/Cmd + clique) — ou arraste até aqui</div>
-        <input type="file" accept=".xlsx,.xls" multiple onchange="importAcamExcel(event,'${c.id}')">
+        <div style="font-weight:600; margin-bottom:4px;">Clique para selecionar o arquivo ACAM (.xlsx)</div>
+        <div class="muted">ou arraste o arquivo até aqui</div>
+        <input type="file" accept=".xlsx,.xls" onchange="importAcamExcel(event,'${c.id}')">
       </label>
       <div id="acam-upload-status" class="muted" style="margin-top:10px; font-weight:600;"></div>
     </div>`;
@@ -2061,12 +2061,12 @@ function renderAcamTab(c){
 
   return `
     <div class="section-head">
-      <div class="section-title">Validação ACAM — ${escapeHtml(analysis.fileName)} ${analysis.multiplos ? '<span class="badge badge-info">Análise compilada</span>' : ''}</div>
+      <div class="section-title">Validação ACAM — ${escapeHtml(analysis.fileName)}</div>
       ${consulta ? '' : `
       <div style="display:flex; gap:10px;">
         <label class="btn btn-secondary btn-sm" style="margin:0;">
-          Enviar outro(s) arquivo(s)
-          <input type="file" accept=".xlsx,.xls" multiple style="display:none" onchange="importAcamExcel(event,'${c.id}')">
+          Enviar outro arquivo
+          <input type="file" accept=".xlsx,.xls" style="display:none" onchange="importAcamExcel(event,'${c.id}')">
         </label>
         <button class="btn btn-primary btn-sm" id="btn-gerar-relatorio" onclick="gerarRelatorio('${c.id}')">Gerar relatório</button>
       </div>`}
@@ -2098,7 +2098,6 @@ function renderAcamTab(c){
       </div>
       <div>
         <div class="section-head"><div class="section-title">Volume por data</div></div>
-        ${analysis.multiplos ? `<div class="muted" style="margin-bottom:8px; font-size:12px;">Análise compilada: mostrando apenas dias com movimentação a partir de ${fmtMoney(1000)}.</div>` : ''}
         <div class="card"><table><thead><tr><th>Data</th><th>Volume</th><th>Maior merchant do dia</th></tr></thead><tbody>${dataRows}</tbody></table></div>
       </div>
     </div>
@@ -2124,9 +2123,127 @@ function renderHistoricoRelatorios(c){
       <td><button class="btn btn-link" onclick="abrirRelatorio('${c.id}','${r.id}')">Abrir</button></td>
     </tr>`).join('');
   return `
-    <div class="section-head" style="margin-top:24px;"><div class="section-title">Relatórios gerados</div></div>
+    <div class="section-head" style="margin-top:24px;">
+      <div class="section-title">Relatórios gerados</div>
+      ${relatorios.length >= 2 ? `<button class="btn btn-secondary btn-sm" onclick="abrirCompilarRelatorios('${c.id}')">📊 Compilar relatórios</button>` : ''}
+    </div>
     <div class="card" style="margin-bottom:24px;">
       <table><thead><tr><th>Data</th><th>Arquivo</th><th>Conferido por</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    </div>`;
+}
+
+/* ======================= COMPILAR RELATÓRIOS (dados já resumidos, sem reprocessar planilhas) =======================
+   Em vez de reprocessar arquivos Excel (que já causou travamentos em
+   arquivos grandes), essa função soma os dados-resumo que já ficaram
+   salvos em cada relatório gerado anteriormente (um de cada vez). Isso é
+   praticamente instantâneo, porque não lê nenhuma planilha de novo — só
+   agrupa números que já foram calculados antes. */
+function abrirCompilarRelatorios(clienteId){
+  if(bloquearConsulta()) return;
+  const c = getClient(clienteId);
+  const relatorios = (c.relatorios||[]).slice().sort((a,b) => b.data.localeCompare(a.data));
+  if(relatorios.length < 2){ showToast('É preciso ter pelo menos 2 relatórios gerados para compilar.'); return; }
+
+  const itemsHtml = relatorios.map(r => `
+    <label style="display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--border-light); cursor:pointer;">
+      <input type="checkbox" class="check-compilar-relatorio" value="${r.id}">
+      <div>
+        <div class="cell-main">${escapeHtml(r.fileName)}</div>
+        <div class="cell-sub">${new Date(r.data).toLocaleString('pt-BR')} · ${fmtMoney(r.resumo.totalGeral)}</div>
+      </div>
+    </label>`).join('');
+
+  const modalRoot = document.getElementById('modal-root');
+  modalRoot.innerHTML = `
+    <div class="overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal">
+        <div class="modal-head"><h3>Compilar relatórios</h3><button class="icon-btn" onclick="closeModal()">✕</button></div>
+        <div class="modal-body">
+          <div class="muted" style="margin-bottom:12px;">Selecione dois ou mais relatórios já gerados para este cliente. A ferramenta soma os dados que já foram calculados em cada um (volume total, top merchants, top clientes) — sem reprocessar nenhuma planilha.</div>
+          ${itemsHtml}
+        </div>
+        <div class="modal-foot">
+          <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+          <button class="btn btn-primary" onclick="compilarRelatoriosSelecionados('${clienteId}')">Compilar selecionados</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function compilarRelatoriosSelecionados(clienteId){
+  const checks = document.querySelectorAll('.check-compilar-relatorio:checked');
+  if(checks.length < 2){ showToast('Selecione pelo menos 2 relatórios para compilar.'); return; }
+
+  const c = getClient(clienteId);
+  const idsSelecionados = Array.from(checks).map(chk => chk.value);
+  const relatoriosSelecionados = (c.relatorios||[]).filter(r => idsSelecionados.includes(r.id));
+
+  let totalGeral = 0, totalBrasil = 0;
+  const merchantsAgregados = {};
+  const clientesAgregados = {};
+  const divergenciasPorRelatorio = [];
+
+  relatoriosSelecionados.forEach(r => {
+    totalGeral += r.resumo.totalGeral || 0;
+    totalBrasil += r.resumo.totalBrasil || 0;
+    (r.resumo.topMerchants||[]).forEach(([nome, valor]) => {
+      merchantsAgregados[nome] = (merchantsAgregados[nome]||0) + valor;
+    });
+    (r.resumo.topClientes||[]).forEach(([nome, valor]) => {
+      clientesAgregados[nome] = (clientesAgregados[nome]||0) + valor;
+    });
+    divergenciasPorRelatorio.push({
+      fileName: r.fileName,
+      data: r.data,
+      divergencias: r.resumo.divergencias || []
+    });
+  });
+
+  const topMerchantsCompilado = Object.entries(merchantsAgregados).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  const topClientesCompilado = Object.entries(clientesAgregados).sort((a,b)=>b[1]-a[1]).slice(0,10);
+
+  logAction(clienteId, 'Compilação de relatórios realizada', `${relatoriosSelecionados.length} relatório(s) compilado(s)`);
+  saveData();
+
+  exibirCompilacaoRelatorios({
+    quantidade: relatoriosSelecionados.length,
+    totalGeral, totalBrasil,
+    topMerchantsCompilado, topClientesCompilado,
+    divergenciasPorRelatorio
+  });
+}
+
+function exibirCompilacaoRelatorios(dados){
+  const merchantsRows = dados.topMerchantsCompilado.map(([nome,valor]) => `<tr><td>${escapeHtml(nome)}</td><td>${fmtMoney(valor)}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">Sem dados suficientes.</td></tr>';
+  const clientesRows = dados.topClientesCompilado.map(([nome,valor]) => `<tr><td>${escapeHtml(nome)}</td><td>${fmtMoney(valor)}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">Sem dados suficientes.</td></tr>';
+  const divergenciasHtml = dados.divergenciasPorRelatorio.map(d => `
+    <div style="margin-bottom:12px;">
+      <div class="cell-main" style="font-size:13px;">${escapeHtml(d.fileName)} — ${new Date(d.data).toLocaleDateString('pt-BR')}</div>
+      ${d.divergencias.length ? `<ul style="margin:4px 0 0 18px; font-size:13px;">${d.divergencias.map(t=>`<li>${escapeHtml(t)}</li>`).join('')}</ul>` : '<div class="muted" style="font-size:12px;">Nenhuma divergência registrada neste relatório.</div>'}
+    </div>`).join('');
+
+  const modalRoot = document.getElementById('modal-root');
+  modalRoot.innerHTML = `
+    <div class="overlay" onclick="if(event.target===this) closeModal()">
+      <div class="modal" style="max-width:640px;">
+        <div class="modal-head"><h3>Análise compilada de ${dados.quantidade} relatórios</h3><button class="icon-btn" onclick="closeModal()">✕</button></div>
+        <div class="modal-body">
+          <div class="muted" style="margin-bottom:16px; font-size:12px;">Esta análise soma os dados já calculados nos relatórios selecionados — não reprocessa as planilhas originais, por isso alguns detalhes (como volume por data) não aparecem aqui, só nos relatórios individuais.</div>
+          <div class="stat-grid" style="margin-bottom:20px;">
+            <div class="stat-card"><div class="stat-label">Volume total somado</div><div class="stat-value" style="font-size:18px;">${fmtMoney(dados.totalGeral)}</div></div>
+            <div class="stat-card"><div class="stat-label">Volume no Brasil somado</div><div class="stat-value" style="font-size:18px;">${fmtMoney(dados.totalBrasil)}</div></div>
+          </div>
+          <div class="section-title" style="margin-bottom:8px;">Top merchants (combinado)</div>
+          <table style="margin-bottom:20px;"><thead><tr><th>Merchant</th><th>Volume</th></tr></thead><tbody>${merchantsRows}</tbody></table>
+          <div class="section-title" style="margin-bottom:8px;">Top clientes no Brasil (combinado)</div>
+          <table style="margin-bottom:20px;"><thead><tr><th>Cliente</th><th>Volume</th></tr></thead><tbody>${clientesRows}</tbody></table>
+          <div class="section-title" style="margin-bottom:8px;">Divergências por relatório</div>
+          ${divergenciasHtml}
+        </div>
+        <div class="modal-foot">
+          <button class="btn btn-primary" onclick="closeModal()">Fechar</button>
+        </div>
+      </div>
     </div>`;
 }
 
@@ -2212,8 +2329,8 @@ function atualizarStatusUploadAcam(mensagem){
 
 async function importAcamExcel(event, clienteId){
   if(bloquearConsulta()) return;
-  const files = Array.from(event.target.files || []);
-  if(!files.length) return;
+  const file = event.target.files[0];
+  if(!file) return;
 
   if(acamProcessando){
     showToast('Já existe um processamento de arquivo ACAM em andamento. Aguarde terminar.');
@@ -2221,11 +2338,7 @@ async function importAcamExcel(event, clienteId){
     return;
   }
   acamProcessando = true;
-
-  const multiplos = files.length > 1;
-  atualizarStatusUploadAcam(multiplos
-    ? `Processando ${files.length} arquivos… não feche esta aba.`
-    : 'Processando arquivo… não feche esta aba.');
+  atualizarStatusUploadAcam('Processando arquivo… não feche esta aba.');
 
   // Trava de segurança: garante que a ferramenta nunca fique presa para
   // sempre, mesmo se algo inesperado travar no meio do caminho.
@@ -2235,9 +2348,9 @@ async function importAcamExcel(event, clienteId){
     finalizado = true;
     acamProcessando = false;
     atualizarStatusUploadAcam('');
-    showToast('O processamento demorou mais do que o esperado e foi cancelado. Tente novamente com menos arquivos ou arquivos menores.');
+    showToast('O processamento demorou mais do que o esperado e foi cancelado. Tente novamente.');
     event.target.value = '';
-  }, 120000);
+  }, 60000);
 
   const finalizarNormalmente = () => {
     if(finalizado) return;
@@ -2249,42 +2362,17 @@ async function importAcamExcel(event, clienteId){
   };
 
   try{
-    let transacoes = [];
-    let algumaColunaFaltando = false;
-    let algumErroDeLeitura = false;
-
-    for(let i = 0; i < files.length; i++){
-      if(finalizado) return; // já cancelado pela trava de segurança
-      const file = files[i];
-      if(multiplos){
-        atualizarStatusUploadAcam(`Processando arquivo ${i+1} de ${files.length} (${file.name})… não feche esta aba.`);
-        // Cede o controle ao navegador para a mensagem acima realmente
-        // aparecer na tela antes de começar o trabalho pesado deste arquivo.
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-      try{
-        const buffer = await readFileAsArrayBuffer(file);
-        const t = parseAcamWorkbook(buffer);
-        if(t === null){ algumaColunaFaltando = true; continue; }
-        transacoes = transacoes.concat(t);
-      }catch(fileErr){
-        algumErroDeLeitura = true;
-        console.error('Erro ao processar o arquivo ACAM', file.name, fileErr);
-        showToast(`Não foi possível ler o arquivo "${file.name}". Pulando para o próximo.`);
-      }
-      // Cede o controle ao navegador entre arquivos, mesmo com um único
-      // arquivo, para a interface nunca ficar "dura" durante o processamento.
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
+    const buffer = await readFileAsArrayBuffer(file);
+    const transacoes = parseAcamWorkbook(buffer);
 
     if(finalizado) return;
 
+    if(transacoes === null){
+      showToast('Não foi possível localizar as colunas de Merchant e Valor na planilha ACAM.');
+      return;
+    }
     if(!transacoes.length){
-      showToast(algumaColunaFaltando
-        ? 'Não foi possível localizar as colunas de Merchant e Valor na(s) planilha(s) ACAM.'
-        : (algumErroDeLeitura
-            ? 'Nenhum dos arquivos enviados pôde ser lido corretamente.'
-            : 'Nenhuma transação encontrada no(s) arquivo(s) enviado(s).'));
+      showToast('Nenhuma transação encontrada no arquivo enviado.');
       return;
     }
 
@@ -2300,7 +2388,6 @@ async function importAcamExcel(event, clienteId){
     const nomeOriginalPorNormalizado = {};
     const operacoesAcimaLimite = [];
     const LIMITE_OPERACAO_UNICA = 10000;
-    const LIMITE_MOVIMENTACAO_EXPRESSIVA = 1000;
 
     transacoes.forEach(t => {
       const nome = t.merchant;
@@ -2335,16 +2422,6 @@ async function importAcamExcel(event, clienteId){
       }
     });
 
-    // Quando vários arquivos são compilados juntos, o "volume por data" mostra
-    // apenas os dias com movimentação expressiva (soma >= US$ 1.000,00).
-    let porDataFiltrado = porData;
-    if(multiplos){
-      porDataFiltrado = {};
-      Object.entries(porData).forEach(([data, valor]) => {
-        if(valor >= LIMITE_MOVIMENTACAO_EXPRESSIVA) porDataFiltrado[data] = valor;
-      });
-    }
-
     // divergências (com a lista de merchants envolvidos em cada uma)
     const flags = [];
     const naoCadastradosNorm = [...merchantsNoArquivo].filter(n => !registrados.has(n));
@@ -2352,7 +2429,7 @@ async function importAcamExcel(event, clienteId){
     if(naoCadastrados.length){
       flags.push({
         tipo:'alerta',
-        texto: `${naoCadastrados.length} merchant(s) presentes no(s) arquivo(s) ACAM não estão cadastrados neste cliente — verificar onboarding e possível operação não autorizada.`,
+        texto: `${naoCadastrados.length} merchant(s) presentes no arquivo ACAM não estão cadastrados neste cliente — verificar onboarding e possível operação não autorizada.`,
         detalhes: naoCadastrados
       });
     }
@@ -2368,7 +2445,7 @@ async function importAcamExcel(event, clienteId){
     if(merchantsReprovadosComMovimento.length){
       flags.push({
         tipo:'alerta',
-        texto: `${merchantsReprovadosComMovimento.length} merchant(s) com status Reprovado apresentaram movimentação no(s) arquivo(s) ACAM — requer ação imediata.`,
+        texto: `${merchantsReprovadosComMovimento.length} merchant(s) com status Reprovado apresentaram movimentação no arquivo ACAM — requer ação imediata.`,
         detalhes: merchantsReprovadosComMovimento.map(m => m.razaoSocial)
       });
     }
@@ -2384,20 +2461,19 @@ async function importAcamExcel(event, clienteId){
     }
 
     acamAnalysis[clienteId] = {
-      fileName: multiplos ? `${files.length} arquivos compilados (${files.map(f=>f.name).join(', ')})` : files[0].name,
-      multiplos,
-      porMerchant, porData: porDataFiltrado, porDataMerchant, porClienteBR, totalGeral, totalBrasil, flags,
+      fileName: file.name,
+      porMerchant, porData, porDataMerchant, porClienteBR, totalGeral, totalBrasil, flags,
       naoCadastrados, operacoesAcimaLimite
     };
-    logAction(clienteId, 'Validação ACAM realizada', `${multiplos ? files.length + ' arquivos compilados' : files[0].name} — ${flags.length} divergência(s) identificada(s)`);
+    logAction(clienteId, 'Validação ACAM realizada', `${file.name} — ${flags.length} divergência(s) identificada(s)`);
     saveData();
     finalizarNormalmente();
     render();
-    showToast(multiplos ? `${files.length} arquivos cruzados e compilados com sucesso.` : 'Arquivo ACAM cruzado com sucesso.');
+    showToast('Arquivo ACAM cruzado com sucesso.');
     return;
   }catch(err){
     console.error(err);
-    showToast('Erro ao processar o(s) arquivo(s) ACAM. Verifique o formato.');
+    showToast('Erro ao processar o arquivo ACAM. Verifique o formato.');
   }
   finalizarNormalmente();
 }
