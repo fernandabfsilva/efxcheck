@@ -2795,7 +2795,7 @@ Este dossiê consolida o cruzamento entre as contrapartes no exterior ("Merchant
 O objetivo é identificar, para cada Merchant que operou no arquivo analisado, o respectivo status de validação, aqueles com volumes expressivos e seus clientes de modo a priorizar ações de diligência e mitigar riscos de LD/FT associados aos mesmos.
 
 2. Base de Dados e Metodologia
-Foi analisado o arquivo [nome do(s) arquivo(s)] totalizando [valor total], referentes a [quantidade] Merchants distintos.
+Foi analisado o arquivo [nome do(s) arquivo(s)] totalizando [valor total em USD], referentes a [quantidade] Merchants distintos.
 
 3. Observações e Recomendações
 [Aqui, com base nas divergências fornecidas nos dados (merchants não cadastrados, merchants reprovados com movimentação, merchants aprovados sem movimentação, concentração excessiva, operações acima de US$ 10.000,00), redija de 2 a 5 parágrafos curtos com a leitura de risco e recomendações de ação concretas para o analista, com fundamentação normativa objetiva (cite apenas os normativos mais pertinentes a cada ponto levantado). Se não houver divergências relevantes, declare isso explicitamente e recomende a manutenção do monitoramento de rotina.]
@@ -2812,6 +2812,7 @@ async function gerarRelatorio(clienteId){
   if(btn){ btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Gerando…'; }
 
   const LIMITE_CLIENTE_RELEVANTE = 10000;
+  const LIMITE_CLIENTE_EXPRESSIVO = 1000;
   const totalGeralNum = analysis.totalGeral;
 
   const topMerchants = Object.entries(analysis.porMerchant)
@@ -2823,7 +2824,7 @@ async function gerarRelatorio(clienteId){
       pct: totalGeralNum ? (valor/totalGeralNum*100) : 0
     }));
 
-  const clientesRelevantes = Object.entries(analysis.porClienteBR||{})
+  const todosClientes = Object.entries(analysis.porClienteBR||{})
     .map(([nome, info]) => ({
       nome,
       valor: info.total,
@@ -2834,8 +2835,10 @@ async function gerarRelatorio(clienteId){
         .join(', '),
       pct: totalGeralNum ? (info.total/totalGeralNum*100) : 0
     }))
-    .filter(x => x.valor >= LIMITE_CLIENTE_RELEVANTE)
     .sort((a,b) => b.valor - a.valor);
+
+  const clientesRelevantes = todosClientes.filter(x => x.valor >= LIMITE_CLIENTE_RELEVANTE);
+  const clientesExpressivos = todosClientes.filter(x => x.valor >= LIMITE_CLIENTE_EXPRESSIVO);
 
   const dadosResumo = {
     cliente: c.razaoSocial,
@@ -2847,6 +2850,7 @@ async function gerarRelatorio(clienteId){
     merchantsPorStatus: analysis.merchantsPorStatus || { Aprovado: 0, Reprovado: 0, 'Em Validação': 0 },
     topMerchants,
     clientesRelevantes,
+    clientesExpressivos,
     divergencias: analysis.flags.map(f=>f.texto)
   };
 
@@ -2937,6 +2941,9 @@ function abrirRelatorio(clienteId, relatorioId){
   const clientesRelevantesHtml = (resumo.clientesRelevantes||[]).map(cl => `
     <tr><td class="cell-main">${escapeHtml(cl.nome)}</td><td>${cl.contagem}</td><td>${escapeHtml(cl.merchants||'—')}</td><td>${fmtMoney(cl.valor)}</td><td>${cl.pct.toFixed(1)}%</td></tr>`).join('') || `<tr><td colspan="5" class="muted">Nenhum cliente no Brasil atingiu US$ 10.000,00 no período analisado.</td></tr>`;
 
+  const clientesExpressivosHtml = (resumo.clientesExpressivos||[]).map(cl => `
+    <tr><td class="cell-main">${escapeHtml(cl.nome)}</td><td>${cl.contagem}</td><td>${escapeHtml(cl.merchants||'—')}</td><td>${fmtMoney(cl.valor)}</td><td>${cl.pct.toFixed(1)}%</td></tr>`).join('') || `<tr><td colspan="5" class="muted">Nenhum cliente no Brasil atingiu US$ 1.000,00 no período analisado.</td></tr>`;
+
   const editavel = !isConsultaAtivo() && (relatorio.statusValidacao === 'rascunho' || relatorio.statusValidacao === 'rejeitado');
   const emValidacao = relatorio.statusValidacao === 'em_validacao';
   const aprovado = relatorio.statusValidacao === 'aprovado';
@@ -3023,6 +3030,11 @@ function abrirRelatorio(clienteId, relatorioId){
               <div class="report-section">
                 <h3>Clientes no Brasil com volume ≥ US$ 10.000,00</h3>
                 <table><thead><tr><th>Cliente</th><th>Qtd. operações</th><th>Merchant</th><th>Volume total</th><th>% do total</th></tr></thead><tbody>${clientesRelevantesHtml}</tbody></table>
+              </div>
+
+              <div class="report-section">
+                <h3>Clientes no Brasil com volume ≥ US$ 1.000,00</h3>
+                <table><thead><tr><th>Cliente</th><th>Qtd. operações</th><th>Merchant</th><th>Volume total</th><th>% do total</th></tr></thead><tbody>${clientesExpressivosHtml}</tbody></table>
               </div>
 
               <div class="report-section">
@@ -3125,6 +3137,8 @@ function baixarRelatorio(clienteId, relatorioId){
     <tr><td>${escapeHtml(m.nome)}</td><td>${m.contagem}</td><td>${fmtMoney(m.valor)}</td><td>${m.pct.toFixed(1)}%</td></tr>`).join('') || `<tr><td colspan="4">Sem dados de merchant identificados.</td></tr>`;
   const clientesRelevantesHtml = (resumo.clientesRelevantes||[]).map(cl => `
     <tr><td>${escapeHtml(cl.nome)}</td><td>${cl.contagem}</td><td>${escapeHtml(cl.merchants||'—')}</td><td>${fmtMoney(cl.valor)}</td><td>${cl.pct.toFixed(1)}%</td></tr>`).join('') || `<tr><td colspan="5">Nenhum cliente no Brasil atingiu US$ 10.000,00 no período analisado.</td></tr>`;
+  const clientesExpressivosHtml = (resumo.clientesExpressivos||[]).map(cl => `
+    <tr><td>${escapeHtml(cl.nome)}</td><td>${cl.contagem}</td><td>${escapeHtml(cl.merchants||'—')}</td><td>${fmtMoney(cl.valor)}</td><td>${cl.pct.toFixed(1)}%</td></tr>`).join('') || `<tr><td colspan="5">Nenhum cliente no Brasil atingiu US$ 1.000,00 no período analisado.</td></tr>`;
   const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Relatório ACAM — ${escapeHtml(resumo.cliente)}</title>
 <style>
 body{font-family:Arial,sans-serif; color:#292929; margin:0; background:#fff;}
@@ -3155,6 +3169,8 @@ th,td{text-align:left; padding:8px; border-bottom:1px solid #e6e6e6; font-size:1
   <table><thead><tr><th>Merchant</th><th>Qtd. operações</th><th>Volume total</th><th>% do total</th></tr></thead><tbody>${topMerchantsHtml}</tbody></table>
   <h2>Clientes no Brasil com volume ≥ US$ 10.000,00</h2>
   <table><thead><tr><th>Cliente</th><th>Qtd. operações</th><th>Merchant</th><th>Volume total</th><th>% do total</th></tr></thead><tbody>${clientesRelevantesHtml}</tbody></table>
+  <h2>Clientes no Brasil com volume ≥ US$ 1.000,00</h2>
+  <table><thead><tr><th>Cliente</th><th>Qtd. operações</th><th>Merchant</th><th>Volume total</th><th>% do total</th></tr></thead><tbody>${clientesExpressivosHtml}</tbody></table>
   <h2>Análise de compliance</h2>
   <div class="narrativa">${escapeHtml(relatorio.narrativa)}</div>
   <p class="small">Relatório gerado pelo eFX Check — Remessa Online. Aprovado pela gerência em ${relatorio.aprovadoEm ? new Date(relatorio.aprovadoEm).toLocaleString('pt-BR') : '—'}.</p>
