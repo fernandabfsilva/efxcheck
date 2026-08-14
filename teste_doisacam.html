@@ -192,6 +192,29 @@
     .topbar, .no-print{display:none !important;}
     .page{padding:0; max-width:100%;}
     body{background:#fff;}
+
+    /* Some a página inteira por trás do modal (painel do cliente, abas,
+       menus etc.) — só o conteúdo do relatório deve aparecer impresso. */
+    #app, #toast-wrap{display:none !important;}
+
+    /* O modal normalmente é uma caixa pequena, fixa na tela, com altura
+       limitada e rolagem própria — isso faz a impressão cortar o
+       conteúdo. Aqui ele volta a ser um bloco comum, que flui
+       naturalmente por quantas páginas forem necessárias. */
+    #modal-root{position:static !important;}
+    #modal-root .overlay{
+      position:static !important; background:none !important;
+      padding:0 !important; display:block !important; z-index:auto !important;
+    }
+    #modal-root .modal{
+      max-width:100% !important; width:100% !important;
+      max-height:none !important; height:auto !important;
+      overflow:visible !important; box-shadow:none !important;
+      border-radius:0 !important; margin:0 !important;
+    }
+    #modal-root .modal-body{padding:0 !important; overflow:visible !important;}
+    .report-header{-webkit-print-color-adjust:exact; print-color-adjust:exact;}
+    .report-section{page-break-inside:avoid;}
   }
 
   .toast-wrap{position:fixed; bottom:24px; right:24px; z-index:200; display:flex; flex-direction:column; gap:10px;}
