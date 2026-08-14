@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Diagnóstico ACAM v2 — eFX Check</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  body{ font-family: -apple-system, Arial, sans-serif; background:#fafbff; color:#292929; margin:0; padding:32px; max-width:760px; }
+  h1{ font-size:20px; margin-bottom:4px; }
+  .muted{ color:#666; font-size:13px; margin-bottom:24px; }
+  .card{ border:1px solid #e6e6e6; border-radius:10px; padding:20px; margin-bottom:16px; background:#fff; }
+  .dropzone{ border:2px dashed #c7d0ff; border-radius:10px; padding:24px; text-align:center; cursor:pointer; background:#f5f7ff; }
+  .item{ display:flex; align-items:flex-start; gap:10px; padding:12px 0; border-bottom:1px solid #f0f0f0; }
+  .item:last-child{ border-bottom:none; }
+  .icone{ font-size:16px; }
+  .label{ font-weight:600; font-size:13px; }
+  .valor{ font-size:13px; color:#333; margin-top:2px; white-space:pre-wrap; }
+  .ok{ color:#1a8f4c; }
+  .erro{ color:#c0392b; }
+  .aviso{ color:#b8860b; }
+  #resultados{ display:none; }
+</style>
+</head>
+<body>
+  <h1>Diagnóstico de processamento ACAM — v2 (detalhado)</h1>
+  <div class="muted">Essa versão quebra o tempo em etapas menores, para descobrir exatamente onde o processamento está travando. Nada é salvo ou enviado — tudo roda só no seu navegador.</div>
+
+  <div class="card">
+    <label class="dropzone" style="display:block;">
+      <div style="font-weight:600; margin-bottom:4px;">Clique para selecionar o arquivo ACAM real (.xlsx)</div>
+      <div class="muted" style="margin:0;">Se a aba travar durante o teste, espere — o próprio travamento já é um dado importante. Se travar por muito tempo (mais de 1 minuto), pode recarregar a página e me avisar disso também.</div>
+      <input type="file" id="input-arquivo" accept=".xlsx,.xls" style="display:none">
+    </label>
+  </div>
+
+  <div id="status" class="muted"></div>
+
+  <div id="resultados" class="card">
+    <div id="lista-resultados"></div>
+  </div>
+
+<script>
+  const input = document.getElementById('input-arquivo');
+  const status = document.getElementById('status');
+  const resultadosBox = document.getElementById('resultados');
+  const lista = document.getElementById('lista-resultados');
+
+  function addItem(icone, label, valor, classe){
+    const div = document.createElement('div');
+    div.className = 'item';
+    const span = document.createElement('div');
+    span.innerHTML = `<div class="label"></div><div class="valor ${classe||''}"></div>`;
+    span.querySelector('.label').textContent = label;
+    span.querySelector('.valor').textContent = valor;
+    div.innerHTML = `<div class="icone">${icone}</div>`;
+    div.appendChild(span);
+    lista.appendChild(div);
+  }
+
+  function esperarRepintar(){
+    // Garante que o item recem-adicionado realmente aparece na tela
+    // antes de travar com a proxima etapa pesada.
+    return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+
+  function readFileAsArrayBuffer(file){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = () => reject(new Error('Falha ao ler o arquivo'));
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  input.addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if(!file) return;
+
+    lista.innerHTML = '';
+    resultadosBox.style.display = 'block';
+    status.textContent = 'Iniciando…';
+
+    addItem('📄', 'Arquivo', `${file.name} — ${(file.size/1024/1024).toFixed(2)} MB`);
+    await esperarRepintar();
+
+    // ETAPA 1: ler o arquivo como bytes
+    status.textContent = 'Etapa 1 de 5: lendo o arquivo (FileReader)…';
+    await esperarRepintar();
+    let buffer;
+    try{
+      const t0 = performance.now();
+      buffer = await readFileAsArrayBuffer(file);
+      addItem('✅', 'Etapa 1 — Leitura do arquivo (FileReader)', `${(performance.now()-t0).toFixed(0)} ms`, 'ok');
+    }catch(err){
+      addItem('❌', 'Etapa 1 — Leitura do arquivo', err.message, 'erro');
+      status.textContent = 'Parou na etapa 1.';
+      return;
+    }
+    await esperarRepintar();
+
+    // ETAPA 2: XLSX.read() -- interpretar o arquivo .xlsx (descompactar e
+    // interpretar o XML interno). SEM limite de linhas nesta etapa, de
+    // propósito, para medir o comportamento "cru".
+    status.textContent = 'Etapa 2 de 5: interpretando o arquivo (XLSX.read, sem limite)… isso pode travar a aba por um tempo — é esperado, estamos medindo exatamente isso.';
+    await esperarRepintar();
+    let wb;
+    try{
+      const t0 = performance.now();
+      wb = XLSX.read(new Uint8Array(buffer), {type:'array', cellDates:true});
+      addItem('✅', 'Etapa 2 — XLSX.read() (sem limite de linhas)', `${(performance.now()-t0).toFixed(0)} ms`, 'ok');
+    }catch(err){
+      addItem('❌', 'Etapa 2 — XLSX.read()', err.message, 'erro');
+      status.textContent = 'Parou na etapa 2.';
+      return;
+    }
+    await esperarRepintar();
+
+    // ETAPA 3: examinar o intervalo (!ref) e quantas planilhas existem
+    const nomesPlanilhas = wb.SheetNames;
+    const sheet = wb.Sheets[nomesPlanilhas[0]];
+    const ref = sheet['!ref'] || '(sem !ref definido)';
+    let infoIntervalo = `Planilhas no arquivo: ${nomesPlanilhas.length} (${nomesPlanilhas.join(', ')})\nIntervalo usado na 1ª planilha (!ref): ${ref}`;
+    try{
+      const range = XLSX.utils.decode_range(sheet['!ref']);
+      const numLinhas = range.e.r - range.s.r + 1;
+      const numColunas = range.e.c - range.s.c + 1;
+      infoIntervalo += `\nIsso equivale a ${numLinhas.toLocaleString('pt-BR')} linhas × ${numColunas.toLocaleString('pt-BR')} colunas`;
+      const numCelulasDeclaradas = numLinhas * numColunas;
+      const numCelulasReais = Object.keys(sheet).filter(k => !k.startsWith('!')).length;
+      infoIntervalo += `\nCélulas realmente preenchidas: ${numCelulasReais.toLocaleString('pt-BR')} de ${numCelulasDeclaradas.toLocaleString('pt-BR')} possíveis (${(numCelulasReais/numCelulasDeclaradas*100).toFixed(3)}% preenchido)`;
+    }catch(e){
+      infoIntervalo += '\n(não foi possível decodificar o intervalo)';
+    }
+    addItem('ℹ️', 'Etapa 3 — Informações do intervalo usado', infoIntervalo);
+    await esperarRepintar();
+
+    // ETAPA 4: sheet_to_json SEM limite (o que o app antigo fazia)
+    status.textContent = 'Etapa 4 de 5: convertendo para linhas (sheet_to_json, sem limite)… de novo, pode travar — estamos medindo.';
+    await esperarRepintar();
+    let rowsSemLimite;
+    try{
+      const t0 = performance.now();
+      rowsSemLimite = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
+      addItem('✅', 'Etapa 4 — sheet_to_json (sem limite)', `${(performance.now()-t0).toFixed(0)} ms — ${rowsSemLimite.length.toLocaleString('pt-BR')} linhas geradas`, 'ok');
+    }catch(err){
+      addItem('❌', 'Etapa 4 — sheet_to_json (sem limite)', err.message, 'erro');
+    }
+    await esperarRepintar();
+
+    // ETAPA 5: com o limite de seguranca (sheetRows), do jeito que o eFX Check faz agora
+    status.textContent = 'Etapa 5 de 5: testando com o limite de segurança (sheetRows: 100000), do jeito que o eFX Check faz agora…';
+    await esperarRepintar();
+    try{
+      const t0 = performance.now();
+      const wbLimitado = XLSX.read(new Uint8Array(buffer), {type:'array', cellDates:true, sheetRows: 100000});
+      const sheetLimitado = wbLimitado.Sheets[wbLimitado.SheetNames[0]];
+      const rowsLimitado = XLSX.utils.sheet_to_json(sheetLimitado, {header:1, defval:''});
+      addItem('✅', 'Etapa 5 — Com limite de segurança (sheetRows: 100000)', `${(performance.now()-t0).toFixed(0)} ms — ${rowsLimitado.length.toLocaleString('pt-BR')} linhas geradas`, 'ok');
+    }catch(err){
+      addItem('❌', 'Etapa 5 — Com limite de segurança', err.message, 'erro');
+    }
+
+    status.textContent = 'Diagnóstico concluído. Tire um print desta tela inteira (role se precisar) e envie.';
+  });
+</script>
+</body>
+</html>
