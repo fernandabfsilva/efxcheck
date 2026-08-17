@@ -1212,20 +1212,92 @@ function renderDashboard(){
   const atencao = clientes.filter(c => clientPendencyInfo(c).worst === 'atencao').length;
   const aprovados = clientes.filter(c => c.status === 'Aprovado').length;
   const emAnalise = clientes.filter(c => c.status === 'Em Análise').length;
+  const reprovadosClientes = clientes.filter(c => c.status === 'Reprovado').length;
 
   // Consolidado do volume operado: soma o total de cada relatório de validação
   // ACAM já gerado (de todos os clientes), com base nos relatórios salvos —
   // não depende de nenhuma validação ainda aberta na sessão atual.
   let volumeTotalOperado = 0;
   let quantidadeRelatorios = 0;
+  let relatoriosPendentesAprovacao = 0;
+  const volumePorMes = {}; // 'AAAA-MM' -> valor
+  const volumePorCliente = {}; // clienteId -> { nome, total }
+
   clientes.forEach(c => {
+    let totalDoCliente = 0;
     (c.relatorios||[]).forEach(r => {
       if(r.resumo && typeof r.resumo.totalGeral === 'number'){
         volumeTotalOperado += r.resumo.totalGeral;
         quantidadeRelatorios++;
+        totalDoCliente += r.resumo.totalGeral;
+        const mes = (r.data||'').slice(0,7);
+        if(mes) volumePorMes[mes] = (volumePorMes[mes]||0) + r.resumo.totalGeral;
+      }
+      if(r.statusValidacao === 'em_validacao') relatoriosPendentesAprovacao++;
+    });
+    if(totalDoCliente > 0) volumePorCliente[c.id] = { nome: c.razaoSocial, total: totalDoCliente };
+  });
+
+  // Merchants agregados (todos os clientes), por status de aprovação
+  let merchantsTotal = 0;
+  const merchantsStatus = { Aprovado: 0, Reprovado: 0, 'Em Validação': 0 };
+  clientes.forEach(c => {
+    (c.merchants||[]).forEach(m => {
+      merchantsTotal++;
+      if(merchantsStatus.hasOwnProperty(m.status)) merchantsStatus[m.status]++;
+    });
+  });
+
+  const topClientesPorVolume = Object.values(volumePorCliente).sort((a,b)=>b.total-a.total).slice(0,5);
+
+  // Top merchants por volume operado — soma TODOS os merchants salvos em
+  // cada relatório gerado (de todos os clientes), não só um "top 5" por
+  // relatório. Essa é uma soma exata de tudo que já foi processado e
+  // salvo em relatórios até agora (não recalcula transações que nunca
+  // viraram relatório).
+  const volumePorMerchantGlobal = {};
+  clientes.forEach(c => {
+    (c.relatorios||[]).forEach(r => {
+      if(r.resumo && Array.isArray(r.resumo.topMerchants)){
+        r.resumo.topMerchants.forEach(m => {
+          volumePorMerchantGlobal[m.nome] = (volumePorMerchantGlobal[m.nome]||0) + (m.valor||0);
+        });
       }
     });
   });
+  const topMerchantsGlobal = Object.entries(volumePorMerchantGlobal).sort((a,b)=>b[1]-a[1]).slice(0,5);
+
+  // Top clientes no Brasil por volume operado — mesmo princípio: soma
+  // TODOS os clientes no Brasil salvos em cada relatório (de todos os
+  // clientes eFX), não só quem passava de algum limite mínimo.
+  const volumePorClienteBRGlobal = {};
+  clientes.forEach(c => {
+    (c.relatorios||[]).forEach(r => {
+      if(r.resumo && Array.isArray(r.resumo.clientesDetalhado)){
+        r.resumo.clientesDetalhado.forEach(cl => {
+          volumePorClienteBRGlobal[cl.nome] = (volumePorClienteBRGlobal[cl.nome]||0) + (cl.valor||0);
+        });
+      }
+    });
+  });
+  const topClientesBRGlobal = Object.entries(volumePorClienteBRGlobal).sort((a,b)=>b[1]-a[1]).slice(0,5);
+
+  // Gráfico simples de volume por mês (últimos 6 meses com dados)
+  const NOMES_MES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const mesesOrdenados = Object.keys(volumePorMes).sort().slice(-6);
+  const maxVolumeMes = Math.max(1, ...mesesOrdenados.map(m => volumePorMes[m]));
+  const graficoMesesHtml = mesesOrdenados.length ? mesesOrdenados.map(m => {
+    const [ano, mesNum] = m.split('-');
+    const altura = Math.max(4, (volumePorMes[m]/maxVolumeMes)*100);
+    return `
+      <div style="display:flex; flex-direction:column; align-items:center; gap:6px; flex:1; min-width:0;">
+        <div class="muted" style="font-size:10px; white-space:nowrap;">${fmtMoney(volumePorMes[m]).replace('R$','').trim()}</div>
+        <div style="width:100%; height:110px; display:flex; align-items:flex-end; justify-content:center;">
+          <div style="width:70%; max-width:40px; height:${altura}%; background:var(--action); border-radius:4px 4px 0 0;" title="${fmtMoney(volumePorMes[m])}"></div>
+        </div>
+        <div class="muted" style="font-size:11px;">${NOMES_MES[parseInt(mesNum,10)-1]||mesNum}/${ano.slice(2)}</div>
+      </div>`;
+  }).join('') : `<div class="muted" style="padding:20px 0;">Nenhum relatório gerado ainda para montar o gráfico.</div>`;
 
   let alertHtml = '';
   if(alertClients.length){
@@ -1272,6 +1344,24 @@ function renderDashboard(){
       ${isConsultaAtivo() ? '' : `<div style="margin-top:16px;"><button class="btn btn-primary" onclick="openNewClientModal()">+ Novo cliente eFX</button></div>`}
     </div></div>`;
 
+  const topClientesHtml = topClientesPorVolume.length ? `
+    <table>
+      <thead><tr><th>Cliente</th><th>Volume operado</th></tr></thead>
+      <tbody>${topClientesPorVolume.map(x => `<tr><td class="cell-main">${escapeHtml(x.nome)}</td><td>${fmtMoney(x.total)}</td></tr>`).join('')}</tbody>
+    </table>` : `<div class="muted" style="padding:12px 0;">Nenhum relatório gerado ainda.</div>`;
+
+  const topMerchantsGlobalHtml = topMerchantsGlobal.length ? `
+    <table>
+      <thead><tr><th>Merchant</th><th>Volume operado</th></tr></thead>
+      <tbody>${topMerchantsGlobal.map(([nome, valor]) => `<tr><td class="cell-main">${escapeHtml(nome)}</td><td>${fmtMoney(valor)}</td></tr>`).join('')}</tbody>
+    </table>` : `<div class="muted" style="padding:12px 0;">Nenhum relatório gerado ainda.</div>`;
+
+  const topClientesBRGlobalHtml = topClientesBRGlobal.length ? `
+    <table>
+      <thead><tr><th>Cliente no Brasil</th><th>Volume operado</th></tr></thead>
+      <tbody>${topClientesBRGlobal.map(([nome, valor]) => `<tr><td class="cell-main">${escapeHtml(nome)}</td><td>${fmtMoney(valor)}</td></tr>`).join('')}</tbody>
+    </table>` : `<div class="muted" style="padding:12px 0;">Nenhum relatório gerado ainda.</div>`;
+
   return `
     <div class="page-head">
       <div>
@@ -1285,13 +1375,61 @@ function renderDashboard(){
       <div class="stat-card"><div class="stat-label">Clientes cadastrados</div><div class="stat-value">${clientes.length}</div></div>
       <div class="stat-card"><div class="stat-label">Aprovados</div><div class="stat-value">${aprovados}</div></div>
       <div class="stat-card"><div class="stat-label">Em análise</div><div class="stat-value">${emAnalise}</div></div>
+      <div class="stat-card"><div class="stat-label">Reprovados</div><div class="stat-value" style="color:${reprovadosClientes?'var(--text-error)':'var(--text-primary)'}">${reprovadosClientes}</div></div>
       <div class="stat-card"><div class="stat-label">Pendências vencidas</div><div class="stat-value" style="color:${vencidos? 'var(--text-error)':'var(--text-primary)'}">${vencidos}</div></div>
+      <div class="stat-card"><div class="stat-label">Prazo próximo do vencimento</div><div class="stat-value" style="color:${atencao? 'var(--text-warning)':'var(--text-primary)'}">${atencao}</div></div>
       <div class="stat-card">
         <div class="stat-label">Volume operado (consolidado)</div>
         <div class="stat-value" style="font-size:18px;">${fmtMoney(volumeTotalOperado)}</div>
         <div class="muted" style="font-size:11px; margin-top:2px;">Soma de ${quantidadeRelatorios} relatório(s) ACAM já gerado(s)</div>
       </div>
+      <div class="stat-card" style="${relatoriosPendentesAprovacao && isGerenteAtivo() ? 'cursor:pointer;' : ''}" ${relatoriosPendentesAprovacao && isGerenteAtivo() ? `onclick="goFilaGerencial()"` : ''}>
+        <div class="stat-label">Relatórios aguardando aprovação</div>
+        <div class="stat-value" style="color:${relatoriosPendentesAprovacao?'var(--text-warning)':'var(--text-primary)'}">${relatoriosPendentesAprovacao}</div>
+        ${relatoriosPendentesAprovacao && isGerenteAtivo() ? `<div class="muted" style="font-size:11px; margin-top:2px;">Clique para abrir a fila gerencial</div>` : ''}
+      </div>
     </div>
+
+    <div class="grid-2" style="margin-bottom:24px;">
+      <div>
+        <div class="section-head"><div class="section-title">Volume operado por mês</div></div>
+        <div class="card card-pad" style="display:flex; align-items:flex-end; gap:8px;">${graficoMesesHtml}</div>
+      </div>
+      <div>
+        <div class="section-head"><div class="section-title">Merchants por status (todos os clientes)</div></div>
+        <div class="card card-pad">
+          <div style="display:flex; flex-direction:column; gap:14px;">
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;"><span>Aprovados</span><strong>${merchantsStatus.Aprovado}</strong></div>
+              <div style="background:var(--border-light); border-radius:6px; height:8px; overflow:hidden;"><div style="width:${merchantsTotal?(merchantsStatus.Aprovado/merchantsTotal*100):0}%; height:100%; background:var(--text-success,#1a8f4c);"></div></div>
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;"><span>Em validação</span><strong>${merchantsStatus['Em Validação']}</strong></div>
+              <div style="background:var(--border-light); border-radius:6px; height:8px; overflow:hidden;"><div style="width:${merchantsTotal?(merchantsStatus['Em Validação']/merchantsTotal*100):0}%; height:100%; background:var(--text-warning,#b8860b);"></div></div>
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;"><span>Reprovados</span><strong>${merchantsStatus.Reprovado}</strong></div>
+              <div style="background:var(--border-light); border-radius:6px; height:8px; overflow:hidden;"><div style="width:${merchantsTotal?(merchantsStatus.Reprovado/merchantsTotal*100):0}%; height:100%; background:var(--text-error);"></div></div>
+            </div>
+          </div>
+          <div class="muted" style="font-size:11px; margin-top:14px;">${merchantsTotal} merchant(s) cadastrado(s) no total, entre todos os clientes.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-bottom:24px;">
+      <div>
+        <div class="section-head"><div class="section-title">Top 5 clientes eFX por volume operado</div></div>
+        <div class="card">${topClientesHtml}</div>
+      </div>
+      <div>
+        <div class="section-head"><div class="section-title">Top 5 merchants por volume operado</div></div>
+        <div class="card">${topMerchantsGlobalHtml}</div>
+      </div>
+    </div>
+
+    <div class="section-head"><div class="section-title">Top 5 clientes no Brasil por volume operado</div></div>
+    <div class="card" style="margin-bottom:24px;">${topClientesBRGlobalHtml}</div>
 
     ${alertHtml}
     ${tableOrEmpty}
@@ -2150,13 +2288,52 @@ function renderHistoricoRelatorios(c){
       <td>${relatorioStatusBadge(r)}</td>
       <td><button class="btn btn-link" onclick="abrirRelatorio('${c.id}','${r.id}')">Abrir</button></td>
     </tr>`).join('');
+
+  // Top merchants por volume operado, somando TODOS os relatórios já
+  // gerados para este cliente especificamente (soma exata, já que cada
+  // relatório guarda todos os merchants da análise, não só um top 5).
+  const volumePorMerchantCliente = {};
+  relatorios.forEach(r => {
+    if(r.resumo && Array.isArray(r.resumo.topMerchants)){
+      r.resumo.topMerchants.forEach(m => {
+        volumePorMerchantCliente[m.nome] = (volumePorMerchantCliente[m.nome]||0) + (m.valor||0);
+      });
+    }
+  });
+  const topMerchantsCliente = Object.entries(volumePorMerchantCliente).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const topMerchantsClienteHtml = topMerchantsCliente.length ? `
+    <div class="section-head" style="margin-top:24px;"><div class="section-title">Top merchants por volume operado (histórico deste cliente)</div></div>
+    <div class="card" style="margin-bottom:24px;">
+      <table><thead><tr><th>Merchant</th><th>Volume operado</th></tr></thead><tbody>${topMerchantsCliente.map(([nome,valor])=>`<tr><td class="cell-main">${escapeHtml(nome)}</td><td>${fmtMoney(valor)}</td></tr>`).join('')}</tbody></table>
+    </div>` : '';
+
+  // Top clientes no Brasil por volume operado, somando TODOS os relatórios
+  // já gerados para este cliente eFX especificamente (soma exata, mesmo
+  // princípio usado para merchants).
+  const volumePorClienteBRCliente = {};
+  relatorios.forEach(r => {
+    if(r.resumo && Array.isArray(r.resumo.clientesDetalhado)){
+      r.resumo.clientesDetalhado.forEach(cl => {
+        volumePorClienteBRCliente[cl.nome] = (volumePorClienteBRCliente[cl.nome]||0) + (cl.valor||0);
+      });
+    }
+  });
+  const topClientesBRCliente = Object.entries(volumePorClienteBRCliente).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const topClientesBRClienteHtml = topClientesBRCliente.length ? `
+    <div class="section-head"><div class="section-title">Top clientes no Brasil por volume operado (histórico deste cliente)</div></div>
+    <div class="card" style="margin-bottom:24px;">
+      <table><thead><tr><th>Cliente no Brasil</th><th>Volume operado</th></tr></thead><tbody>${topClientesBRCliente.map(([nome,valor])=>`<tr><td class="cell-main">${escapeHtml(nome)}</td><td>${fmtMoney(valor)}</td></tr>`).join('')}</tbody></table>
+    </div>` : '';
+
   return `
     <div class="section-head" style="margin-top:24px;">
       <div class="section-title">Relatórios gerados</div>
     </div>
     <div class="card" style="margin-bottom:24px;">
       <table><thead><tr><th>Data</th><th>Arquivo</th><th>Conferido por</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-    </div>`;
+    </div>
+    ${topMerchantsClienteHtml}
+    ${topClientesBRClienteHtml}`;
 }
 
 function readFileAsArrayBuffer(file){
@@ -2838,16 +3015,24 @@ async function gerarRelatorio(clienteId){
   const LIMITE_CLIENTE_EXPRESSIVO = 1000;
   const totalGeralNum = analysis.totalGeral;
 
+  // Guarda TODOS os merchants da análise (não só os 5 maiores) — isso
+  // permite somar valores exatos entre relatórios depois (no painel
+  // geral e no histórico por cliente), sem perder nenhum merchant que
+  // não tenha entrado num "top 5" de uma análise específica.
   const topMerchants = Object.entries(analysis.porMerchant)
     .sort((a,b)=>b[1]-a[1])
-    .slice(0,5)
     .map(([nome, valor]) => ({
       nome, valor,
       contagem: (analysis.contagemPorMerchant||{})[nome] || 0,
       pct: totalGeralNum ? (valor/totalGeralNum*100) : 0
     }));
 
-  const todosClientes = Object.entries(analysis.porClienteBR||{})
+  // Guarda TODOS os clientes no Brasil da análise (sem filtro de valor
+  // mínimo) — mesmo princípio usado para merchants: isso permite somar
+  // valores exatos entre relatórios depois (painel geral e histórico por
+  // cliente eFX). Os recortes de exibição (>= R$1.000, >= R$10.000) são
+  // aplicados na hora de mostrar, não na hora de guardar.
+  const clientesDetalhado = Object.entries(analysis.porClienteBR||{})
     .map(([nome, info]) => ({
       nome,
       valor: info.total,
@@ -2860,9 +3045,6 @@ async function gerarRelatorio(clienteId){
     }))
     .sort((a,b) => b.valor - a.valor);
 
-  const clientesRelevantes = todosClientes.filter(x => x.valor >= LIMITE_CLIENTE_RELEVANTE);
-  const clientesExpressivos = todosClientes.filter(x => x.valor >= LIMITE_CLIENTE_EXPRESSIVO);
-
   const dadosResumo = {
     cliente: c.razaoSocial,
     cnpj: c.cnpj,
@@ -2872,8 +3054,7 @@ async function gerarRelatorio(clienteId){
     merchantsCadastrados: (c.merchants||[]).length,
     merchantsPorStatus: analysis.merchantsPorStatus || { Aprovado: 0, Reprovado: 0, 'Em Validação': 0 },
     topMerchants,
-    clientesRelevantes,
-    clientesExpressivos,
+    clientesDetalhado,
     divergencias: analysis.flags.map(f=>f.texto)
   };
 
@@ -2961,10 +3142,11 @@ function abrirRelatorio(clienteId, relatorioId){
   const topMerchantsHtml = (resumo.topMerchants||[]).map(m => `
     <tr><td class="cell-main">${escapeHtml(m.nome)}</td><td>${m.contagem}</td><td>${fmtMoney(m.valor)}</td><td>${m.pct.toFixed(1)}%</td></tr>`).join('') || `<tr><td colspan="4" class="muted">Sem dados de merchant identificados.</td></tr>`;
 
-  const clientesRelevantesHtml = (resumo.clientesRelevantes||[]).map(cl => `
+  const clientesDetalhado = resumo.clientesDetalhado || [];
+  const clientesRelevantesHtml = clientesDetalhado.filter(cl => cl.valor >= 10000).map(cl => `
     <tr><td class="cell-main">${escapeHtml(cl.nome)}</td><td>${cl.contagem}</td><td>${escapeHtml(cl.merchants||'—')}</td><td>${fmtMoney(cl.valor)}</td><td>${cl.pct.toFixed(1)}%</td></tr>`).join('') || `<tr><td colspan="5" class="muted">Nenhum cliente no Brasil atingiu US$ 10.000,00 no período analisado.</td></tr>`;
 
-  const clientesExpressivosHtml = (resumo.clientesExpressivos||[]).map(cl => `
+  const clientesExpressivosHtml = clientesDetalhado.filter(cl => cl.valor >= 1000).map(cl => `
     <tr><td class="cell-main">${escapeHtml(cl.nome)}</td><td>${cl.contagem}</td><td>${escapeHtml(cl.merchants||'—')}</td><td>${fmtMoney(cl.valor)}</td><td>${cl.pct.toFixed(1)}%</td></tr>`).join('') || `<tr><td colspan="5" class="muted">Nenhum cliente no Brasil atingiu US$ 1.000,00 no período analisado.</td></tr>`;
 
   const editavel = !isConsultaAtivo() && (relatorio.statusValidacao === 'rascunho' || relatorio.statusValidacao === 'rejeitado');
@@ -3158,9 +3340,10 @@ function baixarRelatorio(clienteId, relatorioId){
   const resumo = relatorio.resumo;
   const topMerchantsHtml = (resumo.topMerchants||[]).map(m => `
     <tr><td>${escapeHtml(m.nome)}</td><td>${m.contagem}</td><td>${fmtMoney(m.valor)}</td><td>${m.pct.toFixed(1)}%</td></tr>`).join('') || `<tr><td colspan="4">Sem dados de merchant identificados.</td></tr>`;
-  const clientesRelevantesHtml = (resumo.clientesRelevantes||[]).map(cl => `
+  const clientesDetalhadoDownload = resumo.clientesDetalhado || [];
+  const clientesRelevantesHtml = clientesDetalhadoDownload.filter(cl => cl.valor >= 10000).map(cl => `
     <tr><td>${escapeHtml(cl.nome)}</td><td>${cl.contagem}</td><td>${escapeHtml(cl.merchants||'—')}</td><td>${fmtMoney(cl.valor)}</td><td>${cl.pct.toFixed(1)}%</td></tr>`).join('') || `<tr><td colspan="5">Nenhum cliente no Brasil atingiu US$ 10.000,00 no período analisado.</td></tr>`;
-  const clientesExpressivosHtml = (resumo.clientesExpressivos||[]).map(cl => `
+  const clientesExpressivosHtml = clientesDetalhadoDownload.filter(cl => cl.valor >= 1000).map(cl => `
     <tr><td>${escapeHtml(cl.nome)}</td><td>${cl.contagem}</td><td>${escapeHtml(cl.merchants||'—')}</td><td>${fmtMoney(cl.valor)}</td><td>${cl.pct.toFixed(1)}%</td></tr>`).join('') || `<tr><td colspan="5">Nenhum cliente no Brasil atingiu US$ 1.000,00 no período analisado.</td></tr>`;
   const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Relatório ACAM — ${escapeHtml(resumo.cliente)}</title>
 <style>
