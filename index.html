@@ -1762,14 +1762,16 @@ function renderMerchantsTab(c){
     <div class="section-head">
       <div class="section-title">Merchants vinculados a este cliente</div>
       ${consulta ? '' : `
-      <div style="display:flex; gap:10px;">
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
         <label class="btn btn-secondary btn-sm" style="margin:0;">
           Importar Excel
           <input type="file" accept=".xlsx,.xls" style="display:none" onchange="importMerchantsExcel(event,'${c.id}')">
         </label>
+        <button class="btn btn-secondary btn-sm" onclick="validarTodosMerchants('${c.id}')">✅ Validar todos</button>
         <button class="btn btn-primary btn-sm" onclick="openMerchantModal('${c.id}')">+ Adicionar merchant</button>
       </div>`}
     </div>
+    ${consulta ? '' : `<div id="validar-todos-status" class="muted" style="margin-bottom:10px; font-weight:600;"></div>`}
     ${table}
     ${consulta ? '' : `<div class="muted" style="margin-top:10px;">Planilha esperada com colunas: Razão Social, País, Site/Rede Social, Área de Atuação, Volume, Aprovação.</div>`}
   `;
@@ -1935,6 +1937,29 @@ function validarMerchant(clienteId, merchantId){
   buscarInfoSiteMerchant(m.site);
 }
 
+// Faz a busca gratuita de site (título/descrição) e devolve os dados brutos,
+// sem depender de nenhum elemento da tela — usada tanto pelo modal individual
+// quanto pela validação em lote.
+async function buscarInfoSiteBruto(site){
+  if(!site || site.trim().startsWith('@')){
+    return { ok:false, semSite: !site, redeSocial: !!(site && site.trim().startsWith('@')) };
+  }
+  try{
+    const backendUrl = getBackendUrl();
+    if(!backendUrl){
+      throw new Error('URL do backend não configurada.');
+    }
+    const resp = await fetch(backendUrl + '?action=buscarSite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ site })
+    });
+    return await resp.json();
+  }catch(err){
+    return { ok:false, erro: err.message };
+  }
+}
+
 async function buscarInfoSiteMerchant(site){
   const box = document.getElementById('info-site-conteudo');
   if(!box) return;
@@ -1946,32 +1971,80 @@ async function buscarInfoSiteMerchant(site){
     return;
   }
 
-  try{
-    const backendUrl = getBackendUrl();
-    if(!backendUrl){
-      throw new Error('URL do backend não configurada.');
-    }
-    const resp = await fetch(backendUrl + '?action=buscarSite', {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ site })
-    });
-    const data = await resp.json();
-    if(!data.ok){
-      box.textContent = 'Não foi possível buscar automaticamente: ' + (data.erro || 'erro desconhecido');
-      return;
-    }
-    if(!data.titulo && !data.descricao){
-      box.textContent = 'O site respondeu, mas não foi possível encontrar título ou descrição na página.';
-      return;
-    }
-    box.innerHTML = `
-      ${data.titulo ? `<div><strong>Título da página:</strong> ${escapeHtml(data.titulo)}</div>` : ''}
-      ${data.descricao ? `<div style="margin-top:4px;"><strong>Descrição:</strong> ${escapeHtml(data.descricao)}</div>` : ''}
-    `;
-  }catch(err){
-    box.textContent = 'Não foi possível buscar automaticamente: ' + err.message;
+  const data = await buscarInfoSiteBruto(site);
+  if(!data.ok){
+    box.textContent = 'Não foi possível buscar automaticamente: ' + (data.erro || 'erro desconhecido');
+    return;
   }
+  if(!data.titulo && !data.descricao){
+    box.textContent = 'O site respondeu, mas não foi possível encontrar título ou descrição na página.';
+    return;
+  }
+  box.innerHTML = `
+    ${data.titulo ? `<div><strong>Título da página:</strong> ${escapeHtml(data.titulo)}</div>` : ''}
+    ${data.descricao ? `<div style="margin-top:4px;"><strong>Descrição:</strong> ${escapeHtml(data.descricao)}</div>` : ''}
+  `;
+}
+
+/* Valida automaticamente todos os merchants que AINDA NÃO têm nenhuma
+   validação de atividade registrada (merchants já validados manualmente,
+   ou já processados numa validação em lote anterior, não são alterados).
+   Para cada um, busca o site (gratuito, sem IA) e registra como
+   "Inconclusivo" com o que foi encontrado — é um ponto de partida para o
+   analista revisar depois, não uma decisão final automática. */
+async function validarTodosMerchants(clienteId){
+  if(bloquearConsulta()) return;
+  const c = getClient(clienteId);
+  const pendentes = (c.merchants||[]).filter(m => !m.validacaoAtividade);
+
+  if(!pendentes.length){
+    showToast('Todos os merchants já têm uma validação registrada. Use "Revalidar" individualmente se quiser refazer algum.');
+    return;
+  }
+
+  showConfirm(
+    `Isso vai buscar automaticamente o site de ${pendentes.length} merchant(s) que ainda não têm validação, e marcar cada um como "Inconclusivo" com o que for encontrado, para você revisar depois. Merchants já validados não serão alterados. Continuar?`,
+    () => executarValidacaoEmLote(clienteId, pendentes)
+  );
+}
+
+async function executarValidacaoEmLote(clienteId, pendentes){
+  const statusEl = document.getElementById('validar-todos-status');
+  const atualizarStatus = (msg) => { if(statusEl) statusEl.textContent = msg || ''; };
+
+  for(let i = 0; i < pendentes.length; i++){
+    const m = pendentes[i];
+    atualizarStatus(`Validando ${i+1} de ${pendentes.length}: ${m.razaoSocial}…`);
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    let justificativa;
+    const site = (m.site||'').trim();
+    if(!site){
+      justificativa = 'Nenhum site/rede social cadastrado para este merchant — não foi possível pesquisar automaticamente. Validação manual necessária.';
+    } else if(site.startsWith('@')){
+      justificativa = `Merchant usa rede social (${site}), que não permite busca automática de título/descrição de página. Validação manual necessária.`;
+    } else {
+      const dados = await buscarInfoSiteBruto(site);
+      if(dados.ok && (dados.titulo || dados.descricao)){
+        justificativa = `Busca automática do site: ${dados.titulo ? `Título: "${dados.titulo}". ` : ''}${dados.descricao ? `Descrição: "${dados.descricao}".` : ''} Comparar com a área de atuação declarada ("${m.area||'não informada'}") e confirmar manualmente.`;
+      } else {
+        justificativa = `Não foi possível obter informações automáticas do site (${dados.erro || 'sem título/descrição disponível na página'}). Validação manual necessária.`;
+      }
+    }
+
+    m.validacaoAtividade = {
+      status: 'Inconclusivo',
+      justificativa,
+      validadoEm: new Date().toISOString(),
+      validadoPor: `${nomeAnalistaAtivo()} (validação automática em lote)`
+    };
+  }
+
+  logAction(clienteId, 'Validação em lote de merchants realizada', `${pendentes.length} merchant(s) processado(s) automaticamente`);
+  saveData();
+  atualizarStatus('');
+  render();
+  showToast(`${pendentes.length} merchant(s) validado(s) automaticamente como "Inconclusivo". Revise cada um individualmente quando puder.`);
 }
 
 async function validarMerchantComIA(clienteId, merchantId){
@@ -2108,30 +2181,56 @@ function importMerchantsExcel(event, clienteId){
 
       const c = getClient(clienteId);
       c.merchants = c.merchants || [];
-      let count = 0;
+      // Reimportar uma planilha NÃO deve duplicar merchants já cadastrados
+      // nem apagar validações de atividade já feitas — por isso, merchants
+      // com o mesmo nome (normalizado) são ATUALIZADOS, não recriados. Uma
+      // coluna ausente na planilha nova preserva o valor que já existia.
+      const existentesPorNome = new Map(c.merchants.map(m => [normalize(m.razaoSocial), m]));
+      let countNovos = 0, countAtualizados = 0;
+
       for(let i=1;i<rows.length;i++){
         const r = rows[i];
         const razaoSocial = (r[idxRazao]||'').toString().trim();
         if(!razaoSocial) continue;
-        let status = idxStatus!==-1 ? (r[idxStatus]||'').toString().trim() : 'Em Validação';
-        const statusNorm = normalize(status);
-        if(statusNorm.includes('aprov') && !statusNorm.includes('reprov')) status = 'Aprovado';
-        else if(statusNorm.includes('reprov')) status = 'Reprovado';
-        else status = 'Em Validação';
-        c.merchants.push({
-          id: uid('mer'),
-          razaoSocial,
-          pais: idxPais!==-1 ? (r[idxPais]||'').toString().trim() : '',
-          site: idxSite!==-1 ? (r[idxSite]||'').toString().trim() : '',
-          area: idxArea!==-1 ? (r[idxArea]||'').toString().trim() : '',
-          volume: idxVolume!==-1 ? (parseFloat(r[idxVolume])||0) : 0,
-          status
-        });
-        count++;
+
+        let statusDaPlanilha = null;
+        if(idxStatus !== -1){
+          const statusNorm = normalize((r[idxStatus]||'').toString().trim());
+          if(statusNorm.includes('aprov') && !statusNorm.includes('reprov')) statusDaPlanilha = 'Aprovado';
+          else if(statusNorm.includes('reprov')) statusDaPlanilha = 'Reprovado';
+          else statusDaPlanilha = 'Em Validação';
+        }
+
+        const chave = normalize(razaoSocial);
+        const existente = existentesPorNome.get(chave);
+
+        if(existente){
+          existente.razaoSocial = razaoSocial;
+          if(idxPais !== -1) existente.pais = (r[idxPais]||'').toString().trim();
+          if(idxSite !== -1) existente.site = (r[idxSite]||'').toString().trim();
+          if(idxArea !== -1) existente.area = (r[idxArea]||'').toString().trim();
+          if(idxVolume !== -1) existente.volume = parseFloat(r[idxVolume])||0;
+          if(statusDaPlanilha !== null) existente.status = statusDaPlanilha;
+          // id e validacaoAtividade do merchant existente permanecem intactos
+          countAtualizados++;
+        } else {
+          const novo = {
+            id: uid('mer'),
+            razaoSocial,
+            pais: idxPais!==-1 ? (r[idxPais]||'').toString().trim() : '',
+            site: idxSite!==-1 ? (r[idxSite]||'').toString().trim() : '',
+            area: idxArea!==-1 ? (r[idxArea]||'').toString().trim() : '',
+            volume: idxVolume!==-1 ? (parseFloat(r[idxVolume])||0) : 0,
+            status: statusDaPlanilha !== null ? statusDaPlanilha : 'Em Validação'
+          };
+          c.merchants.push(novo);
+          existentesPorNome.set(chave, novo);
+          countNovos++;
+        }
       }
       saveData();
-      logAction(clienteId, 'Merchants importados via Excel', `${count} registro(s) — arquivo ${file.name}`);
-      showToast(`${count} merchant(s) importado(s) com sucesso.`);
+      logAction(clienteId, 'Merchants importados via Excel', `${countNovos} novo(s), ${countAtualizados} atualizado(s) — arquivo ${file.name}`);
+      showToast(`${countNovos} merchant(s) novo(s) e ${countAtualizados} atualizado(s). Validações já feitas foram preservadas.`);
       render();
     }catch(err){
       showToast('Erro ao ler a planilha. Verifique o formato do arquivo.');
