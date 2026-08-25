@@ -1712,9 +1712,19 @@ function addChecklistItem(clienteId){
 }
 
 /* ======================= TAB: MERCHANTS ======================= */
+let merchantFiltroStatus = { Aprovado: true, Reprovado: true, 'Em Validação': true };
+
+function toggleFiltroMerchantStatus(status, checked){
+  merchantFiltroStatus[status] = checked;
+  render();
+}
+
 function renderMerchantsTab(c){
   const consulta = isConsultaAtivo();
-  const rows = (c.merchants||[]).map(m => `
+  const todosMerchants = c.merchants || [];
+  const merchantsFiltrados = todosMerchants.filter(m => merchantFiltroStatus[m.status] !== false);
+
+  const rows = merchantsFiltrados.map(m => `
     <tr>
       <td style="word-break:break-word;">
         <div class="cell-main">${escapeHtml(m.razaoSocial)}</div>
@@ -1738,7 +1748,21 @@ function renderMerchantsTab(c){
       <td>${consulta ? '' : `<button class="icon-btn" title="Remover" onclick="removeMerchant('${c.id}','${m.id}')">🗑</button>`}</td>
     </tr>`).join('');
 
-  const table = (c.merchants||[]).length ? `
+  const filtroHtml = todosMerchants.length ? `
+    <div style="display:flex; gap:18px; align-items:center; margin-bottom:12px; flex-wrap:wrap;">
+      <span class="muted" style="font-size:13px;">Mostrar:</span>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+        <input type="checkbox" ${merchantFiltroStatus.Aprovado ? 'checked' : ''} onchange="toggleFiltroMerchantStatus('Aprovado', this.checked)"> Aprovados
+      </label>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+        <input type="checkbox" ${merchantFiltroStatus.Reprovado ? 'checked' : ''} onchange="toggleFiltroMerchantStatus('Reprovado', this.checked)"> Reprovados
+      </label>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+        <input type="checkbox" ${merchantFiltroStatus['Em Validação'] ? 'checked' : ''} onchange="toggleFiltroMerchantStatus('Em Validação', this.checked)"> Em validação
+      </label>
+    </div>` : '';
+
+  const table = merchantsFiltrados.length ? `
     <div class="card" style="overflow-x:auto;">
       <table style="table-layout:fixed; min-width:900px;">
         <colgroup>
@@ -1754,8 +1778,8 @@ function renderMerchantsTab(c){
         <tbody>${rows}</tbody>
       </table>
     </div>` : `<div class="card"><div class="empty">
-      <div class="empty-title">Nenhum merchant cadastrado</div>
-      <div class="muted">${consulta ? 'Nenhum merchant disponível para consulta.' : 'Cadastre manualmente ou importe uma planilha Excel.'}</div>
+      <div class="empty-title">${todosMerchants.length ? 'Nenhum merchant corresponde ao filtro selecionado' : 'Nenhum merchant cadastrado'}</div>
+      <div class="muted">${todosMerchants.length ? 'Marque outro status acima para ver mais merchants.' : (consulta ? 'Nenhum merchant disponível para consulta.' : 'Cadastre manualmente ou importe uma planilha Excel.')}</div>
     </div></div>`;
 
   return `
@@ -1772,6 +1796,7 @@ function renderMerchantsTab(c){
       </div>`}
     </div>
     ${consulta ? '' : `<div id="validar-todos-status" class="muted" style="margin-bottom:10px; font-weight:600;"></div>`}
+    ${filtroHtml}
     ${table}
     ${consulta ? '' : `<div class="muted" style="margin-top:10px;">Planilha esperada com colunas: Razão Social, País, Site/Rede Social, Área de Atuação, Volume, Aprovação.</div>`}
   `;
@@ -2786,14 +2811,6 @@ async function importAcamExcel(event, clienteId){
         tipo:'alerta',
         texto: `${naoCadastrados.length} merchant(s) presentes no(s) arquivo(s) ACAM não estão cadastrados neste cliente — verificar onboarding e possível operação não autorizada.`,
         detalhes: naoCadastrados
-      });
-    }
-    const registradosSemMovimento = (c.merchants||[]).filter(m => !merchantsNoArquivo.has(normalize(m.razaoSocial)) && m.status==='Aprovado');
-    if(registradosSemMovimento.length){
-      flags.push({
-        tipo:'info',
-        texto: `${registradosSemMovimento.length} merchant(s) aprovado(s) e cadastrado(s) não apresentaram movimentação no período analisado.`,
-        detalhes: registradosSemMovimento.map(m => m.razaoSocial)
       });
     }
     const merchantsReprovadosComMovimento = (c.merchants||[]).filter(m => m.status==='Reprovado' && merchantsNoArquivo.has(normalize(m.razaoSocial)));
