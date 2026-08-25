@@ -1177,6 +1177,7 @@ function renderFilaGerencial(){
       <td class="cell-main">${escapeHtml(cliente.razaoSocial)}</td>
       <td>${escapeHtml(relatorio.fileName)}</td>
       <td>${relatorioStatusBadge(relatorio)}</td>
+      <td>${operacaoRealizadaBadge(relatorio)}</td>
       <td>${escapeHtml(relatorio.aprovadoPor||'—')}</td>
       <td>${new Date(relatorio.aprovadoEm).toLocaleString('pt-BR')}</td>
       <td><button class="btn btn-link" onclick="abrirRelatorio('${cliente.id}','${relatorio.id}')">Abrir</button></td>
@@ -1186,7 +1187,7 @@ function renderFilaGerencial(){
     <div class="section-head" style="margin-top:24px;"><div class="section-title">Decisões recentes</div></div>
     <div class="card">
       <table>
-        <thead><tr><th>Cliente</th><th>Arquivo</th><th>Decisão</th><th>Por</th><th>Data/hora</th><th></th></tr></thead>
+        <thead><tr><th>Cliente</th><th>Arquivo</th><th>Decisão</th><th>Operação</th><th>Por</th><th>Data/hora</th><th></th></tr></thead>
         <tbody>${processadosRows}</tbody>
       </table>
     </div>` : '';
@@ -2410,6 +2411,7 @@ function renderHistoricoRelatorios(c){
       <td>${escapeHtml(r.fileName)}</td>
       <td>${escapeHtml(r.conferidoPor||'—')}</td>
       <td>${relatorioStatusBadge(r)}</td>
+      <td>${operacaoRealizadaBadge(r)}</td>
       <td><button class="btn btn-link" onclick="abrirRelatorio('${c.id}','${r.id}')">Abrir</button></td>
     </tr>`).join('');
 
@@ -2454,7 +2456,7 @@ function renderHistoricoRelatorios(c){
       <div class="section-title">Relatórios gerados</div>
     </div>
     <div class="card" style="margin-bottom:24px;">
-      <table><thead><tr><th>Data</th><th>Arquivo</th><th>Conferido por</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <table><thead><tr><th>Data</th><th>Arquivo</th><th>Conferido por</th><th>Status</th><th>Operação</th><th></th></tr></thead><tbody>${rows}</tbody></table>
     </div>
     ${topMerchantsClienteHtml}
     ${topClientesBRClienteHtml}`;
@@ -3203,7 +3205,14 @@ async function gerarRelatorio(clienteId){
     statusValidacao: 'rascunho', // rascunho | em_validacao | aprovado | rejeitado
     enviadoPor: '', enviadoEm: '',
     aprovadoPor: '', aprovadoEm: '',
-    comentarioGerencia: ''
+    comentarioGerencia: '',
+    // Independente da aprovação do relatório: o arquivo C220 é analisado
+    // ANTES de se saber se a operação vai acontecer de fato. Este campo
+    // sinaliza se a operação em si foi realizada, não realizada, ou ainda
+    // está pendente de definição — sem relação com o fluxo de aprovação.
+    operacaoRealizada: 'Pendente', // Pendente | Realizada | Não realizada
+    operacaoRealizadaAtualizadoPor: '',
+    operacaoRealizadaAtualizadoEm: ''
   };
   c.relatorios = c.relatorios || [];
   c.relatorios.push(relatorio);
@@ -3247,6 +3256,29 @@ function relatorioStatusBadge(relatorio){
   };
   const info = map[relatorio.statusValidacao] || map['rascunho'];
   return `<span class="badge ${info.cls}">${info.label}</span>`;
+}
+
+function operacaoRealizadaBadge(relatorio){
+  const map = {
+    'Pendente': { cls: 'badge-neutral', label: 'Pendente' },
+    'Realizada': { cls: 'badge-success', label: 'Realizada' },
+    'Não realizada': { cls: 'badge-error', label: 'Não realizada' }
+  };
+  const info = map[relatorio.operacaoRealizada] || map['Pendente'];
+  return `<span class="badge ${info.cls}">${info.label}</span>`;
+}
+
+function setOperacaoRealizada(clienteId, relatorioId, valor){
+  if(bloquearConsulta()) return;
+  const c = getClient(clienteId);
+  const relatorio = c.relatorios.find(r => r.id === relatorioId);
+  if(!relatorio) return;
+  relatorio.operacaoRealizada = valor;
+  relatorio.operacaoRealizadaAtualizadoPor = nomeAnalistaAtivo();
+  relatorio.operacaoRealizadaAtualizadoEm = new Date().toISOString();
+  logAction(clienteId, 'Status de realização da operação atualizado', `${relatorio.fileName} — ${valor}`);
+  saveData('Status da operação atualizado.');
+  abrirRelatorio(clienteId, relatorioId);
 }
 
 function abrirRelatorio(clienteId, relatorioId){
@@ -3380,6 +3412,24 @@ function abrirRelatorio(clienteId, relatorioId){
                 </div>
               </div>
 
+              <div class="report-section">
+                <h3>Status da operação</h3>
+                <div class="muted" style="margin-bottom:10px; font-size:12px;">Este arquivo é analisado antes de se saber se a operação vai acontecer de fato — este status é independente da aprovação do relatório acima.</div>
+                <div class="grid-2">
+                  <div class="field" style="margin-bottom:0;">
+                    <label>A operação foi realizada?</label>
+                    ${isConsultaAtivo() ? `<div style="margin-top:8px;">${operacaoRealizadaBadge(relatorio)}</div>` : `
+                    <select onchange="setOperacaoRealizada('${clienteId}','${relatorioId}', this.value)" style="width:100%; border:1px solid var(--border-light); border-radius:6px; padding:8px 10px; font-family:'Inter'; font-size:14px; font-weight:500;">
+                      ${['Pendente','Realizada','Não realizada'].map(v => `<option value="${v}" ${relatorio.operacaoRealizada===v?'selected':''}>${v}</option>`).join('')}
+                    </select>`}
+                  </div>
+                  <div class="field" style="margin-bottom:0;">
+                    <label>Última atualização</label>
+                    <div class="muted" style="margin-top:8px; font-size:13px;">${relatorio.operacaoRealizadaAtualizadoPor ? `${escapeHtml(relatorio.operacaoRealizadaAtualizadoPor)} em ${new Date(relatorio.operacaoRealizadaAtualizadoEm).toLocaleString('pt-BR')}` : 'Ainda não atualizado'}</div>
+                  </div>
+                </div>
+              </div>
+
               <div class="report-section no-print" style="margin-bottom:0; display:flex; gap:10px;">
                 ${acoesHtml}
               </div>
@@ -3481,6 +3531,7 @@ th,td{text-align:left; padding:8px; border-bottom:1px solid #e6e6e6; font-size:1
     <div><div class="small">CNPJ</div><div><strong>${escapeHtml(resumo.cnpj)}</strong></div></div>
     <div><div class="small">Conferido por</div><div><strong>${escapeHtml(relatorio.conferidoPor||'—')}</strong></div></div>
     <div><div class="small">Aprovado por</div><div><strong>${escapeHtml(relatorio.aprovadoPor||'—')} em ${relatorio.aprovadoEm ? new Date(relatorio.aprovadoEm).toLocaleString('pt-BR') : '—'}</strong></div></div>
+    <div><div class="small">Operação foi realizada?</div><div><strong>${escapeHtml(relatorio.operacaoRealizada||'Pendente')}</strong>${relatorio.operacaoRealizadaAtualizadoPor ? ` <span class="small">(${escapeHtml(relatorio.operacaoRealizadaAtualizadoPor)} em ${new Date(relatorio.operacaoRealizadaAtualizadoEm).toLocaleString('pt-BR')})</span>` : ''}</div></div>
   </div>
   <h2>Resumo quantitativo</h2>
   <div class="grid">
