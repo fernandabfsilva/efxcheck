@@ -1232,7 +1232,7 @@ function renderDashboard(){
 
   clientes.forEach(c => {
     (c.relatorios||[]).forEach(r => {
-      if(r.statusValidacao === 'aprovado' && r.resumo && typeof r.resumo.totalGeral === 'number'){
+      if(r.operacaoRealizada === 'Realizada' && r.resumo && typeof r.resumo.totalGeral === 'number'){
         const mes = (r.data||'').slice(0,7);
         if(!mes) return;
         volumePorMesPorCliente[mes] = volumePorMesPorCliente[mes] || {};
@@ -1341,7 +1341,6 @@ function renderDashboard(){
     </div>
 
     <div class="stat-grid">
-      <div class="stat-card"><div class="stat-label">Clientes cadastrados</div><div class="stat-value">${clientes.length}</div></div>
       <div class="stat-card"><div class="stat-label">Aprovados</div><div class="stat-value">${aprovados}</div></div>
       <div class="stat-card"><div class="stat-label">Em análise</div><div class="stat-value">${emAnalise}</div></div>
       <div class="stat-card"><div class="stat-label">Reprovados</div><div class="stat-value" style="color:${reprovadosClientes?'var(--text-error)':'var(--text-primary)'}">${reprovadosClientes}</div></div>
@@ -1357,7 +1356,7 @@ function renderDashboard(){
     <div class="grid-2" style="margin-bottom:24px;">
       <div>
         <div class="section-head"><div class="section-title">Volume operado por mês, por cliente</div></div>
-        <div class="muted" style="margin-bottom:8px; font-size:12px;">Considera apenas relatórios com o status de validação "Aprovado".</div>
+        <div class="muted" style="margin-bottom:8px; font-size:12px;">Considera apenas relatórios cuja operação foi marcada como "Realizada" — independente da aprovação do relatório em si.</div>
         <div class="card card-pad">${graficoMesesClienteHtml}</div>
       </div>
       <div>
