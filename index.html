@@ -1215,90 +1215,76 @@ function renderDashboard(){
   const emAnalise = clientes.filter(c => c.status === 'Em Análise').length;
   const reprovadosClientes = clientes.filter(c => c.status === 'Reprovado').length;
 
-  // Consolidado do volume operado: soma o total de cada relatório de validação
-  // ACAM já gerado (de todos os clientes), com base nos relatórios salvos —
-  // não depende de nenhuma validação ainda aberta na sessão atual.
-  let volumeTotalOperado = 0;
-  let quantidadeRelatorios = 0;
+  // Relatórios aguardando aprovação (fila gerencial)
   let relatoriosPendentesAprovacao = 0;
-  const volumePorMes = {}; // 'AAAA-MM' -> valor
-  const volumePorCliente = {}; // clienteId -> { nome, total }
-
   clientes.forEach(c => {
-    let totalDoCliente = 0;
     (c.relatorios||[]).forEach(r => {
-      if(r.resumo && typeof r.resumo.totalGeral === 'number'){
-        volumeTotalOperado += r.resumo.totalGeral;
-        quantidadeRelatorios++;
-        totalDoCliente += r.resumo.totalGeral;
-        const mes = (r.data||'').slice(0,7);
-        if(mes) volumePorMes[mes] = (volumePorMes[mes]||0) + r.resumo.totalGeral;
-      }
       if(r.statusValidacao === 'em_validacao') relatoriosPendentesAprovacao++;
     });
-    if(totalDoCliente > 0) volumePorCliente[c.id] = { nome: c.razaoSocial, total: totalDoCliente };
   });
 
-  // Merchants agregados (todos os clientes), por status de aprovação
-  let merchantsTotal = 0;
-  const merchantsStatus = { Aprovado: 0, Reprovado: 0, 'Em Validação': 0 };
-  clientes.forEach(c => {
-    (c.merchants||[]).forEach(m => {
-      merchantsTotal++;
-      if(merchantsStatus.hasOwnProperty(m.status)) merchantsStatus[m.status]++;
-    });
-  });
-
-  const topClientesPorVolume = Object.values(volumePorCliente).sort((a,b)=>b.total-a.total).slice(0,5);
-
-  // Top merchants por volume operado — soma TODOS os merchants salvos em
-  // cada relatório gerado (de todos os clientes), não só um "top 5" por
-  // relatório. Essa é uma soma exata de tudo que já foi processado e
-  // salvo em relatórios até agora (não recalcula transações que nunca
-  // viraram relatório).
-  const volumePorMerchantGlobal = {};
-  clientes.forEach(c => {
-    (c.relatorios||[]).forEach(r => {
-      if(r.resumo && Array.isArray(r.resumo.topMerchants)){
-        r.resumo.topMerchants.forEach(m => {
-          volumePorMerchantGlobal[m.nome] = (volumePorMerchantGlobal[m.nome]||0) + (m.valor||0);
-        });
-      }
-    });
-  });
-  const topMerchantsGlobal = Object.entries(volumePorMerchantGlobal).sort((a,b)=>b[1]-a[1]).slice(0,5);
-
-  // Top clientes no Brasil por volume operado — mesmo princípio: soma
-  // TODOS os clientes no Brasil salvos em cada relatório (de todos os
-  // clientes eFX), não só quem passava de algum limite mínimo.
-  const volumePorClienteBRGlobal = {};
-  clientes.forEach(c => {
-    (c.relatorios||[]).forEach(r => {
-      if(r.resumo && Array.isArray(r.resumo.clientesDetalhado)){
-        r.resumo.clientesDetalhado.forEach(cl => {
-          volumePorClienteBRGlobal[cl.nome] = (volumePorClienteBRGlobal[cl.nome]||0) + (cl.valor||0);
-        });
-      }
-    });
-  });
-  const topClientesBRGlobal = Object.entries(volumePorClienteBRGlobal).sort((a,b)=>b[1]-a[1]).slice(0,5);
-
-  // Gráfico simples de volume por mês (últimos 6 meses com dados)
+  // Volume operado por mês, separado por cliente — conta SÓ relatórios cujo
+  // status de validação (aprovação do relatório) seja "aprovado".
   const NOMES_MES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const mesesOrdenados = Object.keys(volumePorMes).sort().slice(-6);
-  const maxVolumeMes = Math.max(1, ...mesesOrdenados.map(m => volumePorMes[m]));
-  const graficoMesesHtml = mesesOrdenados.length ? mesesOrdenados.map(m => {
-    const [ano, mesNum] = m.split('-');
-    const altura = Math.max(4, (volumePorMes[m]/maxVolumeMes)*100);
-    return `
-      <div style="display:flex; flex-direction:column; align-items:center; gap:6px; flex:1; min-width:0;">
-        <div class="muted" style="font-size:10px; white-space:nowrap;">${fmtMoney(volumePorMes[m]).replace('R$','').trim()}</div>
-        <div style="width:100%; height:110px; display:flex; align-items:flex-end; justify-content:center;">
-          <div style="width:70%; max-width:40px; height:${altura}%; background:var(--action); border-radius:4px 4px 0 0;" title="${fmtMoney(volumePorMes[m])}"></div>
-        </div>
-        <div class="muted" style="font-size:11px;">${NOMES_MES[parseInt(mesNum,10)-1]||mesNum}/${ano.slice(2)}</div>
-      </div>`;
-  }).join('') : `<div class="muted" style="padding:20px 0;">Nenhum relatório gerado ainda para montar o gráfico.</div>`;
+  const CORES_CLIENTES = ['#1f41ff','#00b8d9','#ff6b35','#2ecc71','#f4b400','#9b59b6','#e91e63','#795548'];
+  const volumePorMesPorCliente = {}; // 'AAAA-MM' -> { nomeCliente: valor }
+  const totalPorClienteParaGrafico = {};
+
+  clientes.forEach(c => {
+    (c.relatorios||[]).forEach(r => {
+      if(r.statusValidacao === 'aprovado' && r.resumo && typeof r.resumo.totalGeral === 'number'){
+        const mes = (r.data||'').slice(0,7);
+        if(!mes) return;
+        volumePorMesPorCliente[mes] = volumePorMesPorCliente[mes] || {};
+        volumePorMesPorCliente[mes][c.razaoSocial] = (volumePorMesPorCliente[mes][c.razaoSocial]||0) + r.resumo.totalGeral;
+        totalPorClienteParaGrafico[c.razaoSocial] = (totalPorClienteParaGrafico[c.razaoSocial]||0) + r.resumo.totalGeral;
+      }
+    });
+  });
+
+  const mesesOrdenados = Object.keys(volumePorMesPorCliente).sort().slice(-6);
+  const MAX_CLIENTES_GRAFICO = 6;
+  const clientesOrdenadosPorVolume = Object.entries(totalPorClienteParaGrafico).sort((a,b)=>b[1]-a[1]).map(([nome])=>nome);
+  const clientesNoGrafico = clientesOrdenadosPorVolume.slice(0, MAX_CLIENTES_GRAFICO);
+  const corPorCliente = {};
+  clientesNoGrafico.forEach((nome, i) => { corPorCliente[nome] = CORES_CLIENTES[i % CORES_CLIENTES.length]; });
+
+  const maxVolumeMesCliente = Math.max(1, ...mesesOrdenados.map(m =>
+    Math.max(0, ...clientesNoGrafico.map(nome => (volumePorMesPorCliente[m]||{})[nome]||0))
+  ));
+
+  const graficoMesesClienteHtml = mesesOrdenados.length ? `
+    <div style="display:flex; align-items:flex-end; gap:20px; overflow-x:auto; padding-bottom:8px;">
+      ${mesesOrdenados.map(m => {
+        const [ano, mesNum] = m.split('-');
+        const barrasCliente = clientesNoGrafico.map(nome => {
+          const valor = (volumePorMesPorCliente[m]||{})[nome] || 0;
+          const altura = valor > 0 ? Math.max(4, (valor/maxVolumeMesCliente)*100) : 0;
+          return `<div style="width:14px; height:${altura}%; background:${corPorCliente[nome]}; border-radius:3px 3px 0 0;" title="${escapeHtml(nome)}: ${fmtMoney(valor)}"></div>`;
+        }).join('');
+        return `
+          <div style="display:flex; flex-direction:column; align-items:center; gap:6px; flex-shrink:0;">
+            <div style="display:flex; align-items:flex-end; gap:3px; height:110px;">${barrasCliente}</div>
+            <div class="muted" style="font-size:11px;">${NOMES_MES[parseInt(mesNum,10)-1]||mesNum}/${ano.slice(2)}</div>
+          </div>`;
+      }).join('')}
+    </div>
+    <div style="display:flex; flex-wrap:wrap; gap:12px; margin-top:16px; padding-top:12px; border-top:1px solid var(--border-light);">
+      ${clientesNoGrafico.map(nome => `<div style="display:flex; align-items:center; gap:6px; font-size:12px;"><span style="width:10px; height:10px; border-radius:2px; background:${corPorCliente[nome]}; display:inline-block;"></span>${escapeHtml(nome)}</div>`).join('')}
+      ${clientesOrdenadosPorVolume.length > MAX_CLIENTES_GRAFICO ? `<div class="muted" style="font-size:12px;">+ ${clientesOrdenadosPorVolume.length - MAX_CLIENTES_GRAFICO} outro(s) cliente(s) não exibido(s) no gráfico</div>` : ''}
+    </div>` : `<div class="muted" style="padding:20px 0;">Nenhum relatório aprovado ainda para montar o gráfico.</div>`;
+
+  // Merchants por status, um por linha por cliente
+  const merchantsStatusPorClienteRows = clientes.map(c => {
+    const st = { Aprovado: 0, Reprovado: 0, 'Em Validação': 0 };
+    (c.merchants||[]).forEach(m => { if(st.hasOwnProperty(m.status)) st[m.status]++; });
+    const total = st.Aprovado + st.Reprovado + st['Em Validação'];
+    if(!total) return '';
+    return `<tr><td class="cell-main">${escapeHtml(c.razaoSocial)}</td><td>${st.Aprovado}</td><td>${st['Em Validação']}</td><td>${st.Reprovado}</td><td>${total}</td></tr>`;
+  }).filter(Boolean).join('');
+  const merchantsStatusPorClienteHtml = merchantsStatusPorClienteRows ? `
+    <table><thead><tr><th>Cliente</th><th>Aprovados</th><th>Em validação</th><th>Reprovados</th><th>Total</th></tr></thead><tbody>${merchantsStatusPorClienteRows}</tbody></table>`
+    : `<div class="muted" style="padding:12px 0;">Nenhum merchant cadastrado ainda.</div>`;
 
   let alertHtml = '';
   if(alertClients.length){
@@ -1345,24 +1331,6 @@ function renderDashboard(){
       ${isConsultaAtivo() ? '' : `<div style="margin-top:16px;"><button class="btn btn-primary" onclick="openNewClientModal()">+ Novo cliente eFX</button></div>`}
     </div></div>`;
 
-  const topClientesHtml = topClientesPorVolume.length ? `
-    <table>
-      <thead><tr><th>Cliente</th><th>Volume operado</th></tr></thead>
-      <tbody>${topClientesPorVolume.map(x => `<tr><td class="cell-main">${escapeHtml(x.nome)}</td><td>${fmtMoney(x.total)}</td></tr>`).join('')}</tbody>
-    </table>` : `<div class="muted" style="padding:12px 0;">Nenhum relatório gerado ainda.</div>`;
-
-  const topMerchantsGlobalHtml = topMerchantsGlobal.length ? `
-    <table>
-      <thead><tr><th>Merchant</th><th>Volume operado</th></tr></thead>
-      <tbody>${topMerchantsGlobal.map(([nome, valor]) => `<tr><td class="cell-main">${escapeHtml(nome)}</td><td>${fmtMoney(valor)}</td></tr>`).join('')}</tbody>
-    </table>` : `<div class="muted" style="padding:12px 0;">Nenhum relatório gerado ainda.</div>`;
-
-  const topClientesBRGlobalHtml = topClientesBRGlobal.length ? `
-    <table>
-      <thead><tr><th>Cliente no Brasil</th><th>Volume operado</th></tr></thead>
-      <tbody>${topClientesBRGlobal.map(([nome, valor]) => `<tr><td class="cell-main">${escapeHtml(nome)}</td><td>${fmtMoney(valor)}</td></tr>`).join('')}</tbody>
-    </table>` : `<div class="muted" style="padding:12px 0;">Nenhum relatório gerado ainda.</div>`;
-
   return `
     <div class="page-head">
       <div>
@@ -1379,12 +1347,7 @@ function renderDashboard(){
       <div class="stat-card"><div class="stat-label">Reprovados</div><div class="stat-value" style="color:${reprovadosClientes?'var(--text-error)':'var(--text-primary)'}">${reprovadosClientes}</div></div>
       <div class="stat-card"><div class="stat-label">Pendências vencidas</div><div class="stat-value" style="color:${vencidos? 'var(--text-error)':'var(--text-primary)'}">${vencidos}</div></div>
       <div class="stat-card"><div class="stat-label">Prazo próximo do vencimento</div><div class="stat-value" style="color:${atencao? 'var(--text-warning)':'var(--text-primary)'}">${atencao}</div></div>
-      <div class="stat-card">
-        <div class="stat-label">Volume operado (consolidado)</div>
-        <div class="stat-value" style="font-size:18px;">${fmtMoney(volumeTotalOperado)}</div>
-        <div class="muted" style="font-size:11px; margin-top:2px;">Soma de ${quantidadeRelatorios} relatório(s) ACAM já gerado(s)</div>
-      </div>
-      <div class="stat-card" style="${relatoriosPendentesAprovacao && isGerenteAtivo() ? 'cursor:pointer;' : ''}" ${relatoriosPendentesAprovacao && isGerenteAtivo() ? `onclick="goFilaGerencial()"` : ''}>
+      <div class="stat-card${relatoriosPendentesAprovacao && isGerenteAtivo() ? '' : ''}" style="${relatoriosPendentesAprovacao && isGerenteAtivo() ? 'cursor:pointer;' : ''}" ${relatoriosPendentesAprovacao && isGerenteAtivo() ? `onclick="goFilaGerencial()"` : ''}>
         <div class="stat-label">Relatórios aguardando aprovação</div>
         <div class="stat-value" style="color:${relatoriosPendentesAprovacao?'var(--text-warning)':'var(--text-primary)'}">${relatoriosPendentesAprovacao}</div>
         ${relatoriosPendentesAprovacao && isGerenteAtivo() ? `<div class="muted" style="font-size:11px; margin-top:2px;">Clique para abrir a fila gerencial</div>` : ''}
@@ -1393,49 +1356,21 @@ function renderDashboard(){
 
     <div class="grid-2" style="margin-bottom:24px;">
       <div>
-        <div class="section-head"><div class="section-title">Volume operado por mês</div></div>
-        <div class="card card-pad" style="display:flex; align-items:flex-end; gap:8px;">${graficoMesesHtml}</div>
+        <div class="section-head"><div class="section-title">Volume operado por mês, por cliente</div></div>
+        <div class="muted" style="margin-bottom:8px; font-size:12px;">Considera apenas relatórios com o status de validação "Aprovado".</div>
+        <div class="card card-pad">${graficoMesesClienteHtml}</div>
       </div>
       <div>
-        <div class="section-head"><div class="section-title">Merchants por status (todos os clientes)</div></div>
-        <div class="card card-pad">
-          <div style="display:flex; flex-direction:column; gap:14px;">
-            <div>
-              <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;"><span>Aprovados</span><strong>${merchantsStatus.Aprovado}</strong></div>
-              <div style="background:var(--border-light); border-radius:6px; height:8px; overflow:hidden;"><div style="width:${merchantsTotal?(merchantsStatus.Aprovado/merchantsTotal*100):0}%; height:100%; background:var(--text-success,#1a8f4c);"></div></div>
-            </div>
-            <div>
-              <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;"><span>Em validação</span><strong>${merchantsStatus['Em Validação']}</strong></div>
-              <div style="background:var(--border-light); border-radius:6px; height:8px; overflow:hidden;"><div style="width:${merchantsTotal?(merchantsStatus['Em Validação']/merchantsTotal*100):0}%; height:100%; background:var(--text-warning,#b8860b);"></div></div>
-            </div>
-            <div>
-              <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;"><span>Reprovados</span><strong>${merchantsStatus.Reprovado}</strong></div>
-              <div style="background:var(--border-light); border-radius:6px; height:8px; overflow:hidden;"><div style="width:${merchantsTotal?(merchantsStatus.Reprovado/merchantsTotal*100):0}%; height:100%; background:var(--text-error);"></div></div>
-            </div>
-          </div>
-          <div class="muted" style="font-size:11px; margin-top:14px;">${merchantsTotal} merchant(s) cadastrado(s) no total, entre todos os clientes.</div>
-        </div>
+        <div class="section-head"><div class="section-title">Merchants por status, por cliente</div></div>
+        <div class="card">${merchantsStatusPorClienteHtml}</div>
       </div>
     </div>
-
-    <div class="grid-2" style="margin-bottom:24px;">
-      <div>
-        <div class="section-head"><div class="section-title">Top 5 clientes eFX por volume operado</div></div>
-        <div class="card">${topClientesHtml}</div>
-      </div>
-      <div>
-        <div class="section-head"><div class="section-title">Top 5 merchants por volume operado</div></div>
-        <div class="card">${topMerchantsGlobalHtml}</div>
-      </div>
-    </div>
-
-    <div class="section-head"><div class="section-title">Top 5 clientes no Brasil por volume operado</div></div>
-    <div class="card" style="margin-bottom:24px;">${topClientesBRGlobalHtml}</div>
 
     ${alertHtml}
     ${tableOrEmpty}
   `;
 }
+
 
 /* ======================= MODAL: NOVO / EDITAR CLIENTE ======================= */
 function openNewClientModal(existingId){
